@@ -1,6 +1,7 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/gpio.h>
 
 static int __init dht22_init(void) {
 	pr_info("DHT22 module loaded\n");
