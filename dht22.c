@@ -11,72 +11,75 @@
  * TODO: Implement the following:
  * - timer/s to check whether the expected interrupt took too long;
  * - queue work when autoupdate is enabled;
+ * - export to sysfs
  */
 
-#define GPIO_DEFAULT 24
+#define GPIO_DEFAULT 6
 #define AUTOUPDATE_DEFAULT false
 #define AUTOUPDATE_TIMEOUT_MIN 2000 /* 2 sec minimum between readings */
 #define DATA_SIZE 5 /* Number of bytes the DHT22 sensor sends */
 #define BITS_PER_BYTE 8
+#define EXPECTED_IRQ_COUNT 86
+#define TRIGGER_IRQ_COUNT 3
+#define INIT_RESPONSE_IRQ_COUNT 2
 
 #define LOW 0
 #define HIGH 1
 
-static int irq_count = 0; // TODO: remove
+/* signal length in ms */
+#define TRIGGER_DELAY 250
+#define TRIGGER_SIGNAL_LEN 20
 
-static void trigger_sensor(struct work_struct *work);
+/* signal lengths in us */
+#define TRIGGER_POST_DELAY 40
+#define INIT_RESPONSE_LEN 80
+#define PREP_SIGNAL_LEN 50
+#define ZERO_BIT 28
+#define ONE_BIT 75
+#define TOLERANCE 15 /* Each irq delta should deviate +/- 15us at most */
 
-/* TODO: Move all sm-related stuff in separate header and source file? */
-static void change_sm_state(void);
+static void trigger_sensor(void);
+static void reset_data(void);
+
+static bool finished = false;
+static bool triggered = false;
 static irqreturn_t dht22_irq_handler(int irq, void *data);
+static void process_results(struct work_struct *work);
+static void process_data(void);
 
 enum dht22_state get_next_state_idle(void);
-enum dht22_state get_next_state_triggered(void);
-enum dht22_state get_next_state_responding_low(void);
-enum dht22_state get_next_state_responding_high(void);
-enum dht22_state get_next_state_sending_data_prepare(void);
-enum dht22_state get_next_state_sending_data_value(void);
+enum dht22_state get_next_state_responding(void);
+enum dht22_state get_next_state_finished(void);
 enum dht22_state get_next_state_error(void);
 
 enum dht22_state {
 	IDLE = 0,
-	TRIGGERED,
-	RESPONDING_LOW,
-	RESPONDING_HIGH,
-	SENDING_DATA_PREPARE,
-	SENDING_DATA_VALUE,
+	RESPONDING,
+	FINISHED,
 	ERROR,
 	COUNT_STATES
 };
 
-struct dht22_sm {
-	enum dht22_state state;
-	enum dht22_state (*get_next_state)(void);
-};
-
-static struct dht22_sm *sm;
 static enum dht22_state (*state_functions[COUNT_STATES])(void) = {
 	get_next_state_idle,
-	get_next_state_triggered,
-	get_next_state_responding_low,
-	get_next_state_responding_high,
-	get_next_state_sending_data_prepare,
-	get_next_state_sending_data_value,
+	get_next_state_responding,
+	get_next_state_finished,
 	get_next_state_error
 };
 
-/* Container for the data received by the DHT22 */
+static enum dht22_state sm_state = IDLE;
+static struct timespec64 ts_prev_gpio_switch, ts_prev_reading;
+static int irq_number;
+static int processed_irq_count = 0;
+
+static int irq_deltas[EXPECTED_IRQ_COUNT];
 static int sensor_data[DATA_SIZE];
 
-/* Keeping track of the previous state of the gpio for each interrupt */
-static int prev_gpio_state;
-static struct timespec64 ts_prev_gpio_switch, ts_prev_reading;
+static DECLARE_WORK(work, process_results);
 
 static int gpio = GPIO_DEFAULT;
 module_param(gpio, int, S_IRUGO);
 MODULE_PARM_DESC(gpio, "GPIO number of the DHT22's data pin (default = 24)");
-
-static int irq_number;
 
 /* TODO: module params: autoupdate, autoupdate_timeout */
 
@@ -101,8 +104,8 @@ static int __init dht22_init(void)
 		goto out;
 	}
 
+	getnstimeofday64(&ts_prev_gpio_switch);	
 	gpio_direction_input(gpio);
-	pr_info("gpio initial value: %d\n", gpio_get_value(gpio));
 //	gpio_export(gpio, true);
 
 	irq_number = gpio_to_irq(gpio);
@@ -123,28 +126,33 @@ static int __init dht22_init(void)
 		pr_err("request_irq() failed. Exiting.\n");
 		goto irq_req_err;
 	}
-
-	prev_gpio_state = HIGH;
-	getnstimeofday64(&ts_prev_gpio_switch);	
-	trigger_sensor(NULL);
+	
+	reset_data();
+	trigger_sensor();
 
 	pr_info("DHT22 module finished loading.\n");
+	goto out;
 
 irq_req_err:
 	free_irq(irq_number, NULL);
 irq_err:
 //	gpio_unexport(gpio);
 	gpio_free(gpio);
-
 out:
 	return ret;
 }
 
-static void __exit dht22_exit(void) {
+static void __exit dht22_exit(void)
+{
+	free_irq(irq_number, NULL);
+//	gpio_unexport(gpio);
+	gpio_free(gpio);
+
 	pr_info("DHT22 module unloaded\n");
 }
 
-static void trigger_sensor(struct work_struct *work) {
+static void trigger_sensor(void)
+{
 	/* 
 	 * prepare: 250 ms HIGH
 	 * send start signal: 20 ms LOW
@@ -153,41 +161,122 @@ static void trigger_sensor(struct work_struct *work) {
 	 */
 	pr_info("Triggering DHT22 sensor.\n");
 
-	mdelay(250);
+	triggered = true;
+	sm_state = (*state_functions[sm_state])();
 
+	mdelay(TRIGGER_DELAY);
 	gpio_direction_output(gpio, LOW);
-	mdelay(20);
+	mdelay(TRIGGER_SIGNAL_LEN);
 
 	gpio_direction_input(gpio);
-	udelay(50);
+	udelay(TRIGGER_POST_DELAY);
 }
 
-static void change_sm_state(void) {
-	sm->state = sm->get_next_state();
-	sm->get_next_state = state_functions[sm->state];
+static void reset_data(void)
+{
+	int i;
+
+	for (i = 0; i < DATA_SIZE; i++)
+		sensor_data[i] = 0;
+
+	for (i = 0; i < EXPECTED_IRQ_COUNT; i++)
+		irq_deltas[i] = 0;
+
+	processed_irq_count = 0;	
+	finished = false;
+	triggered = false;
 }
 
-static irqreturn_t dht22_irq_handler(int irq, void *data) {
-	int current_gpio_state;
+static irqreturn_t dht22_irq_handler(int irq, void *data)
+{
 	struct timespec64 ts_current_gpio_switch, ts_gpio_switch_diff;
 
-	irq_count++; // TODO: remove
-	current_gpio_state = !prev_gpio_state;
+	if (processed_irq_count >= EXPECTED_IRQ_COUNT) {
+		sm_state = ERROR;
+		reset_data(); /* TODO: move in separate work, and into the err state func */
+		return IRQ_HANDLED;
+	}
+
 	getnstimeofday64(&ts_current_gpio_switch);
 	ts_gpio_switch_diff = timespec64_sub(ts_current_gpio_switch,
 						ts_prev_gpio_switch);
 
-	/* TODO: schedule processing in bottom half */
-	pr_info("irq #%02d; gpio state: %d; time delta: %ld usec (%ld msec)",
-		irq_count,
-		current_gpio_state,
-		ts_gpio_switch_diff.tv_nsec / NSEC_PER_USEC,
-		ts_gpio_switch_diff.tv_nsec / NSEC_PER_MSEC);
-
-	prev_gpio_state = current_gpio_state;
+	irq_deltas[processed_irq_count++] = (int)(ts_gpio_switch_diff.tv_nsec / NSEC_PER_USEC); 
 	ts_prev_gpio_switch = ts_current_gpio_switch;
+	
+	if (processed_irq_count == EXPECTED_IRQ_COUNT) {
+		sm_state = FINISHED;
+		schedule_work(&work);
+	}
 
+	sm_state = (*state_functions[sm_state])();
 	return IRQ_HANDLED;
+}
+
+enum dht22_state get_next_state_idle(void)
+{
+	if (triggered)
+		return RESPONDING;
+
+	return IDLE;
+}
+
+enum dht22_state get_next_state_responding(void)
+{
+	if (finished)
+		return FINISHED;
+
+	return RESPONDING;
+}
+
+enum dht22_state get_next_state_finished(void)
+{
+	return IDLE;
+}
+
+enum dht22_state get_next_state_error(void)
+{
+	return IDLE;
+}
+
+static void process_data(void)
+{
+	int i, bit_value, current_byte, current_bit;
+
+	for (i = 6; i < 6 + 80; i += 2) {
+		bit_value = irq_deltas[i] < PREP_SIGNAL_LEN ? 0 : 1;
+		current_byte = (i - 6) / (2 * BITS_PER_BYTE);
+		current_bit = 7 - (((i - 6) % (2 * BITS_PER_BYTE)) / 2);
+		sensor_data[current_byte] |= bit_value << current_bit;
+	}
+}
+
+static void process_results(struct work_struct *work)
+{
+	int hash, temperature, humidity;
+
+	process_data();
+
+	hash = (sensor_data[0] + sensor_data[1] + sensor_data[2] + sensor_data[3]) & 0xFF;
+	if (hash != sensor_data[4]) {
+		pr_err("Hash mismatch. Stopping. (%d, %d, %d, %d, %d)\n",
+				sensor_data[0], sensor_data[1], sensor_data[2], sensor_data[3], sensor_data[4]);
+		sm_state = ERROR;
+		return;
+	}
+
+	humidity = ((sensor_data[0] << BITS_PER_BYTE) | sensor_data[1]);
+	temperature = ((sensor_data[2] << BITS_PER_BYTE) | sensor_data[3]);
+	if (sensor_data[2] & 0x80)
+		temperature *= -1;
+
+	pr_info("Temperature: %d.%d C; Humidity: %d.%d%%\n",
+		temperature / 10,
+		temperature % 10,	
+		humidity / 10,
+		humidity % 10);
+
+	reset_data();
 }
 
 module_init(dht22_init);
