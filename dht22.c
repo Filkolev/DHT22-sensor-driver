@@ -42,23 +42,29 @@
 
 static void trigger_sensor(void);
 static void reset_data(void);
-enum hrtimer_restart timer_func(struct hrtimer *);
+static enum hrtimer_restart timer_func(struct hrtimer *);
 
 static irqreturn_t dht22_irq_handler(int irq, void *data);
 static void process_results(struct work_struct *work);
 static void process_data(void);
 
-int setup_dht22_gpio(int gpio);
-int setup_dht22_irq(int gpio);
-struct dht22_sm * create_sm(void);
-void destroy_sm(struct dht22_sm *sm);
-void change_dht22_sm_state(struct dht22_sm *sm);
-void reset_dht22_sm(struct dht22_sm *sm);
+static int setup_dht22_gpio(int gpio);
+static int setup_dht22_irq(int gpio);
+static struct dht22_sm * create_sm(void);
+static void destroy_sm(struct dht22_sm *sm);
+static void change_dht22_sm_state(struct dht22_sm *sm);
+static void handle_dht22_state(struct dht22_sm *sm);
 
-enum dht22_state get_next_state_idle(void);
-enum dht22_state get_next_state_responding(void);
-enum dht22_state get_next_state_finished(void);
-enum dht22_state get_next_state_error(void);
+static void reset_dht22_sm(struct dht22_sm *sm);
+
+static enum dht22_state get_next_state_idle(struct dht22_sm *sm);
+static enum dht22_state get_next_state_responding(struct dht22_sm *sm);
+static enum dht22_state get_next_state_finished(struct dht22_sm *sm);
+static enum dht22_state get_next_state_error(struct dht22_sm *sm);
+
+static void handle_idle(struct dht22_sm *sm);
+static void handle_finished(struct dht22_sm *sm);
+static void noop(struct dht22_sm *sm) { }
 
 enum dht22_state {
 	IDLE = 0,
@@ -68,19 +74,29 @@ enum dht22_state {
 	COUNT_STATES
 };
 
-static enum dht22_state (*state_functions[COUNT_STATES])(void) = {
+static enum dht22_state (*state_functions[COUNT_STATES])(struct dht22_sm *sm) = {
 	get_next_state_idle,
 	get_next_state_responding,
 	get_next_state_finished,
 	get_next_state_error
 };
 
+static void (*handler_functions[COUNT_STATES])(struct dht22_sm *sm) = {
+	handle_idle,
+	noop,
+	handle_finished,
+	noop
+};
+
 struct dht22_sm {
 	enum dht22_state state;
 	void (*change_state)(struct dht22_sm *sm);
+	void (*handle_state)(struct dht22_sm *sm);
 	void (*reset)(struct dht22_sm *sm);
 	bool finished;
 	bool triggered;
+	bool error;
+	bool dirty;
 	struct mutex lock;
 };
 
@@ -177,10 +193,11 @@ static void trigger_sensor(void)
 	 * - send start signal (pull line LOW): 20 ms LOW
 	 * - end start signal (stop pulling LOW): 40 us HIGH
 	 */
-	if (sm->state != IDLE)
+	if (sm->triggered)
 		return;
 
 	sm->triggered = true;
+	getnstimeofday64(&ts_prev_reading);
 
 	mdelay(TRIGGER_DELAY);
 
@@ -204,7 +221,7 @@ static void reset_data(void)
 	processed_irq_count = 0;
 }
 
-enum hrtimer_restart timer_func(struct hrtimer *hrtimer)
+static enum hrtimer_restart timer_func(struct hrtimer *hrtimer)
 {
 	trigger_sensor();
 	
@@ -216,11 +233,9 @@ static irqreturn_t dht22_irq_handler(int irq, void *data)
 {
 	struct timespec64 ts_current_gpio_switch, ts_gpio_switch_diff;
 
-	if (processed_irq_count >= EXPECTED_IRQ_COUNT) {
-		sm->state = ERROR;
-		reset_data();
-		sm->reset(sm); /* TODO: move in separate work, and into the err state func */
-		return IRQ_HANDLED;
+	if (!sm->triggered || processed_irq_count >= EXPECTED_IRQ_COUNT) {
+		sm->error = true;
+	//	goto irq_handle;
 	}
 
 	getnstimeofday64(&ts_current_gpio_switch);
@@ -230,16 +245,24 @@ static irqreturn_t dht22_irq_handler(int irq, void *data)
 	irq_deltas[processed_irq_count++] = (int)(ts_gpio_switch_diff.tv_nsec / NSEC_PER_USEC); 
 	ts_prev_gpio_switch = ts_current_gpio_switch;
 	
+	pr_info("irq: #%02d; state: %d; delta: %d\n", processed_irq_count, sm->state, irq_deltas[processed_irq_count - 1]);
+	return IRQ_HANDLED;
 	if (processed_irq_count == EXPECTED_IRQ_COUNT) {
-		sm->state = FINISHED;
-		schedule_work(&work);
+		sm->finished = true;
+		goto irq_handle;
 	}
 
-	sm->change_state(sm);
+	(*state_functions[sm->state])(sm);
+	//sm->change_state(sm);
+irq_handle:
+	if (sm->state == ERROR || sm->state == FINISHED)
+		//sm->handle_state(sm);
+		(*handler_functions[sm->state])(sm);
+
 	return IRQ_HANDLED;
 }
 
-int setup_dht22_gpio(int gpio)
+static int setup_dht22_gpio(int gpio)
 {
 	int ret;
 
@@ -263,7 +286,7 @@ int setup_dht22_gpio(int gpio)
 	return ret;
 }
 
-int setup_dht22_irq(int gpio)
+static int setup_dht22_irq(int gpio)
 {
 	int ret;
 
@@ -289,7 +312,7 @@ int setup_dht22_irq(int gpio)
 	return ret;
 }
 
-struct dht22_sm *create_sm(void)
+static struct dht22_sm *create_sm(void)
 {
 	struct dht22_sm *sm;
 	struct mutex lock;
@@ -304,53 +327,83 @@ struct dht22_sm *create_sm(void)
 	sm->lock = lock;
 	
 	sm->change_state = change_dht22_sm_state;
+	sm->handle_state = handle_dht22_state;
 	sm->reset = reset_dht22_sm;
 
 	return sm;
 }
 
-void destroy_sm(struct dht22_sm *sm)
+static void destroy_sm(struct dht22_sm *sm)
 {
 	mutex_destroy(&sm->lock);
 	kfree(sm);	
 }
 
-enum dht22_state get_next_state_idle(void)
+static enum dht22_state get_next_state_idle(struct dht22_sm *sm)
 {
+	if (sm->error)
+		return ERROR;
+
 	if (sm->triggered)
 		return RESPONDING;
 
 	return IDLE;
 }
 
-enum dht22_state get_next_state_responding(void)
+static enum dht22_state get_next_state_responding(struct dht22_sm *sm)
 {
+	if (sm->error)
+		return ERROR;
+
 	if (sm->finished)
 		return FINISHED;
 
 	return RESPONDING;
 }
 
-enum dht22_state get_next_state_finished(void)
+static enum dht22_state get_next_state_finished(struct dht22_sm *sm)
+{
+	if (sm->error)
+		return ERROR;
+
+	return IDLE;
+}
+
+static enum dht22_state get_next_state_error(struct dht22_sm *sm)
 {
 	return IDLE;
 }
 
-enum dht22_state get_next_state_error(void)
+static void change_dht22_sm_state(struct dht22_sm *sm)
 {
-	return IDLE;
+	sm->state = (*state_functions[sm->state])(sm);
 }
 
-void change_dht22_sm_state(struct dht22_sm *sm)
+static inline void handle_dht22_state(struct dht22_sm *sm)
 {
-	sm->state = (*state_functions[sm->state])();
+	(*handler_functions[sm->state])(sm);
 }
 
-void reset_dht22_sm(struct dht22_sm *sm)
+static void handle_idle(struct dht22_sm *sm)
+{
+	if (sm->dirty) {
+		reset_data();
+		sm->reset(sm);
+	}
+}
+
+static void handle_finished(struct dht22_sm *sm)
+{
+	schedule_work(&work);
+}
+
+static void reset_dht22_sm(struct dht22_sm *sm)
 {
 	sm->state = IDLE;
 	sm->finished = false;
 	sm->triggered = false;	
+	sm->error = false;
+	sm->dirty = false;
 }
 
 static void process_data(void)
@@ -386,9 +439,10 @@ static void process_results(struct work_struct *work)
 				sensor_data[2],
 				sensor_data[3],
 				sensor_data[4]);
-		sm->state = ERROR;
-		reset_data();
-		sm->reset(sm);
+		sm->error = true;
+		sm->change_state(sm);
+		sm->handle_state(sm);
+		pr_info("state after hash mismatch: %d\n", sm->state);
 		return;
 	}
 
@@ -404,6 +458,7 @@ static void process_results(struct work_struct *work)
 		humidity % 10);
 
 	reset_data();
+	sm->reset(sm);
 }
 
 module_init(dht22_init);
