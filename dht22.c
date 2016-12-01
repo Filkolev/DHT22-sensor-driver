@@ -193,10 +193,14 @@ static void trigger_sensor(void)
 	 * - send start signal (pull line LOW): 20 ms LOW
 	 * - end start signal (stop pulling LOW): 40 us HIGH
 	 */
-	if (sm->triggered)
+	if (sm->triggered) {
+		pr_info("Ooops, didn't clean up somewhere...\n");
 		return;
+	}
 
+	pr_info("Sensor triggered\n");
 	sm->triggered = true;
+	sm->state = RESPONDING;
 	getnstimeofday64(&ts_prev_reading);
 
 	mdelay(TRIGGER_DELAY);
@@ -223,6 +227,22 @@ static void reset_data(void)
 
 static enum hrtimer_restart timer_func(struct hrtimer *hrtimer)
 {
+	/*
+	 * If the count of processed IRQs is not 0, this means the previous
+	 * reading is still ongoig (either the sensor was slow to respond or
+	 * we missed an interrupt and never reached the finish state).
+	 * Reset the state to allow the sensor to continue.
+	 * In trials this shows effective insofar as the sensor manages to recover
+	 * and starts the next reading. However, sequences of errors are sometimes
+	 * observed in quick succession. Need to figure out a way to recover in a
+	 * more graceful way.
+	 */
+	if (processed_irq_count) {
+		reset_data();
+		sm->reset(sm);
+		pr_info("Resetting. Something went wrong...\n");
+	}
+
 	trigger_sensor();
 	
 	hrtimer_forward_now(hrtimer, kt_interval); 	
@@ -235,7 +255,7 @@ static irqreturn_t dht22_irq_handler(int irq, void *data)
 
 	if (!sm->triggered || processed_irq_count >= EXPECTED_IRQ_COUNT) {
 		sm->error = true;
-	//	goto irq_handle;
+		goto irq_handle;
 	}
 
 	getnstimeofday64(&ts_current_gpio_switch);
@@ -245,19 +265,38 @@ static irqreturn_t dht22_irq_handler(int irq, void *data)
 	irq_deltas[processed_irq_count++] = (int)(ts_gpio_switch_diff.tv_nsec / NSEC_PER_USEC); 
 	ts_prev_gpio_switch = ts_current_gpio_switch;
 	
-	pr_info("irq: #%02d; state: %d; delta: %d\n", processed_irq_count, sm->state, irq_deltas[processed_irq_count - 1]);
-	return IRQ_HANDLED;
+	//pr_info("irq: #%02d; state: %d; delta: %d\n", processed_irq_count, sm->state, irq_deltas[processed_irq_count - 1]);
+	//return IRQ_HANDLED;
 	if (processed_irq_count == EXPECTED_IRQ_COUNT) {
 		sm->finished = true;
-		goto irq_handle;
+	//	goto irq_handle;
 	}
 
-	(*state_functions[sm->state])(sm);
+//	(*state_functions[sm->state])(sm);
 	//sm->change_state(sm);
 irq_handle:
-	if (sm->state == ERROR || sm->state == FINISHED)
+	//if (sm->state == ERROR || sm->state == FINISHED)
 		//sm->handle_state(sm);
-		(*handler_functions[sm->state])(sm);
+	//	(*handler_functions[sm->state])(sm);
+	switch (sm->state) {
+	case IDLE:
+		break;
+	case RESPONDING:
+		if (sm->finished && !sm->error) {
+			schedule_work(&work);
+			sm->state = FINISHED;
+		} else if (sm->finished && sm->error) {
+			reset_data();
+			sm->reset(sm);
+			sm->state = IDLE;
+		}
+		break;
+	case FINISHED:
+		break;
+	case ERROR:
+	default:
+		break;
+	}
 
 	return IRQ_HANDLED;
 }
@@ -439,10 +478,11 @@ static void process_results(struct work_struct *work)
 				sensor_data[2],
 				sensor_data[3],
 				sensor_data[4]);
-		sm->error = true;
-		sm->change_state(sm);
-		sm->handle_state(sm);
-		pr_info("state after hash mismatch: %d\n", sm->state);
+		reset_data();
+		sm->reset(sm);
+		//sm->change_state(sm);
+		//sm->handle_state(sm);
+		//pr_info("state after hash mismatch: %d\n", sm->state);
 		return;
 	}
 
@@ -459,6 +499,7 @@ static void process_results(struct work_struct *work)
 
 	reset_data();
 	sm->reset(sm);
+	sm->state = IDLE;
 }
 
 module_init(dht22_init);
