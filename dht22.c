@@ -6,27 +6,29 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/slab.h>
+#include <linux/ktime.h>
+#include <linux/hrtimer.h>
 
 /* 
  * TODO: Implement the following:
  * - timer/s to check whether the expected interrupt took too long;
- * - queue work when autoupdate is enabled;
  * - export to sysfs
  */
 
-#define GPIO_DEFAULT 6
+#define GPIO_DEFAULT 23
 #define AUTOUPDATE_DEFAULT false
-#define AUTOUPDATE_TIMEOUT_MIN 2000 /* 2 sec minimum between readings */
+#define AUTOUPDATE_TIMEOUT_MIN 2000 /* 2s minimum between readings, 5s empirically */
 #define DATA_SIZE 5 /* Number of bytes the DHT22 sensor sends */
 #define BITS_PER_BYTE 8
 #define EXPECTED_IRQ_COUNT 86
 #define TRIGGER_IRQ_COUNT 3
 #define INIT_RESPONSE_IRQ_COUNT 2
+#define DATA_IRQ_COUNT 80
 
 #define LOW 0
 #define HIGH 1
 
-/* signal length in ms */
+/* signal lengths in ms */
 #define TRIGGER_DELAY 250
 #define TRIGGER_SIGNAL_LEN 20
 
@@ -40,12 +42,18 @@
 
 static void trigger_sensor(void);
 static void reset_data(void);
+enum hrtimer_restart timer_func(struct hrtimer *);
 
-static bool finished = false;
-static bool triggered = false;
 static irqreturn_t dht22_irq_handler(int irq, void *data);
 static void process_results(struct work_struct *work);
 static void process_data(void);
+
+int setup_dht22_gpio(int gpio);
+int setup_dht22_irq(int gpio);
+struct dht22_sm * create_sm(void);
+void destroy_sm(struct dht22_sm *sm);
+void change_dht22_sm_state(struct dht22_sm *sm);
+void reset_dht22_sm(struct dht22_sm *sm);
 
 enum dht22_state get_next_state_idle(void);
 enum dht22_state get_next_state_responding(void);
@@ -67,10 +75,21 @@ static enum dht22_state (*state_functions[COUNT_STATES])(void) = {
 	get_next_state_error
 };
 
-static enum dht22_state sm_state = IDLE;
+struct dht22_sm {
+	enum dht22_state state;
+	void (*change_state)(struct dht22_sm *sm);
+	void (*reset)(struct dht22_sm *sm);
+	bool finished;
+	bool triggered;
+	struct mutex lock;
+};
+
+static struct dht22_sm *sm;
 static struct timespec64 ts_prev_gpio_switch, ts_prev_reading;
 static int irq_number;
 static int processed_irq_count = 0;
+static ktime_t kt_interval;
+static struct hrtimer timer;
 
 static int irq_deltas[EXPECTED_IRQ_COUNT];
 static int sensor_data[DATA_SIZE];
@@ -79,74 +98,73 @@ static DECLARE_WORK(work, process_results);
 
 static int gpio = GPIO_DEFAULT;
 module_param(gpio, int, S_IRUGO);
-MODULE_PARM_DESC(gpio, "GPIO number of the DHT22's data pin (default = 24)");
+MODULE_PARM_DESC(gpio, "GPIO number of the DHT22's data pin (default = 6)");
 
-/* TODO: module params: autoupdate, autoupdate_timeout */
+static bool autoupdate = false;
+module_param(autoupdate, bool, S_IRUGO);
+MODULE_PARM_DESC(autoupdate, "Re-trigger sensor automatically? (default = false)");
+
+static int autoupdate_timeout = AUTOUPDATE_TIMEOUT_MIN;
+module_param(autoupdate_timeout, int, S_IRUGO);
+MODULE_PARM_DESC(autoupdate_timeout, "Interval between trigger events for the sensor (default = 2s)");
 
 static int __init dht22_init(void)
 {
 	int ret;
 
 	pr_info("DHT22 module loading...\n");
-
 	ret = 0;
-	if (!gpio_is_valid(gpio)) {
-		pr_err("Failed validation of GPIO %d\n", gpio);
-		ret = -EINVAL;
-		goto out;
-	}  
-	
-	pr_info("Validation succeeded for GPIO %d\n", gpio);
 
-	ret = gpio_request(gpio, "sysfs");
-	if (ret < 0) {
-		pr_err("GPIO request failed. Exiting.\n");
+	sm = create_sm();
+	if (IS_ERR(sm)) {
+		ret = PTR_ERR(sm);
 		goto out;
 	}
+	
+	sm->reset(sm);
 
+	ret = setup_dht22_gpio(gpio);
+	if (ret) 
+		goto gpio_err;
+		
 	getnstimeofday64(&ts_prev_gpio_switch);	
-	gpio_direction_input(gpio);
-//	gpio_export(gpio, true);
-
-	irq_number = gpio_to_irq(gpio);
-	if (irq_number < 0) {
-		pr_err("Failed to retrieve IRQ number for GPIO. Exiting.\n");
-		ret = irq_number;
+	ret = setup_dht22_irq(gpio);
+	if (ret) 
 		goto irq_err;
-	}
-	
-	pr_info("Assigned IRQ number %d\n", irq_number);
-
-	ret = request_irq(irq_number,
-			dht22_irq_handler,
-			(IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING),
-			"dht22_gpio_handler",
-			NULL);
-	if (ret < 0) {
-		pr_err("request_irq() failed. Exiting.\n");
-		goto irq_req_err;
-	}
 	
 	reset_data();
-	trigger_sensor();
 
+	if (autoupdate_timeout < AUTOUPDATE_TIMEOUT_MIN)
+		autoupdate_timeout = AUTOUPDATE_TIMEOUT_MIN;
+
+	kt_interval = ktime_set(autoupdate_timeout / MSEC_PER_SEC,
+				(autoupdate_timeout % MSEC_PER_SEC) * NSEC_PER_USEC);
+
+	hrtimer_init(&timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	timer.function = timer_func;
+	hrtimer_start(&timer, kt_interval, HRTIMER_MODE_REL);
+	
 	pr_info("DHT22 module finished loading.\n");
 	goto out;
 
-irq_req_err:
-	free_irq(irq_number, NULL);
 irq_err:
 //	gpio_unexport(gpio);
 	gpio_free(gpio);
+gpio_err:
+	destroy_sm(sm);
+	sm = NULL;
 out:
 	return ret;
 }
 
 static void __exit dht22_exit(void)
 {
+	hrtimer_cancel(&timer);
 	free_irq(irq_number, NULL);
 //	gpio_unexport(gpio);
 	gpio_free(gpio);
+	destroy_sm(sm);
+	sm = NULL;	
 
 	pr_info("DHT22 module unloaded\n");
 }
@@ -154,17 +172,18 @@ static void __exit dht22_exit(void)
 static void trigger_sensor(void)
 {
 	/* 
-	 * prepare: 250 ms HIGH
-	 * send start signal: 20 ms LOW
-	 * send end start signal: 40 us HIGH
-	 * delay: 10 us in library (maybe unnecessary)
+	 * According to datasheet the triggering signal is as follows:
+	 * - prepare (wait some time while line is HIGH): 250 ms
+	 * - send start signal (pull line LOW): 20 ms LOW
+	 * - end start signal (stop pulling LOW): 40 us HIGH
 	 */
-	pr_info("Triggering DHT22 sensor.\n");
+	if (sm->state != IDLE)
+		return;
 
-	triggered = true;
-	sm_state = (*state_functions[sm_state])();
+	sm->triggered = true;
 
 	mdelay(TRIGGER_DELAY);
+
 	gpio_direction_output(gpio, LOW);
 	mdelay(TRIGGER_SIGNAL_LEN);
 
@@ -182,9 +201,15 @@ static void reset_data(void)
 	for (i = 0; i < EXPECTED_IRQ_COUNT; i++)
 		irq_deltas[i] = 0;
 
-	processed_irq_count = 0;	
-	finished = false;
-	triggered = false;
+	processed_irq_count = 0;
+}
+
+enum hrtimer_restart timer_func(struct hrtimer *hrtimer)
+{
+	trigger_sensor();
+	
+	hrtimer_forward_now(hrtimer, kt_interval); 	
+	return (autoupdate ? HRTIMER_RESTART : HRTIMER_NORESTART);	
 }
 
 static irqreturn_t dht22_irq_handler(int irq, void *data)
@@ -192,8 +217,9 @@ static irqreturn_t dht22_irq_handler(int irq, void *data)
 	struct timespec64 ts_current_gpio_switch, ts_gpio_switch_diff;
 
 	if (processed_irq_count >= EXPECTED_IRQ_COUNT) {
-		sm_state = ERROR;
-		reset_data(); /* TODO: move in separate work, and into the err state func */
+		sm->state = ERROR;
+		reset_data();
+		sm->reset(sm); /* TODO: move in separate work, and into the err state func */
 		return IRQ_HANDLED;
 	}
 
@@ -205,17 +231,93 @@ static irqreturn_t dht22_irq_handler(int irq, void *data)
 	ts_prev_gpio_switch = ts_current_gpio_switch;
 	
 	if (processed_irq_count == EXPECTED_IRQ_COUNT) {
-		sm_state = FINISHED;
+		sm->state = FINISHED;
 		schedule_work(&work);
 	}
 
-	sm_state = (*state_functions[sm_state])();
+	sm->change_state(sm);
 	return IRQ_HANDLED;
+}
+
+int setup_dht22_gpio(int gpio)
+{
+	int ret;
+
+	ret = 0;
+	if (!gpio_is_valid(gpio)) {
+		pr_err("Failed validation of GPIO %d\n", gpio);
+		return -EINVAL;
+	}  
+	
+	pr_info("Validation succeeded for GPIO %d\n", gpio);
+
+	ret = gpio_request(gpio, "sysfs");
+	if (ret < 0) {
+		pr_err("GPIO request failed. Exiting.\n");
+		return ret;
+	}
+
+	gpio_direction_input(gpio);
+//	gpio_export(gpio, true);
+
+	return ret;
+}
+
+int setup_dht22_irq(int gpio)
+{
+	int ret;
+
+	ret = 0;
+
+	irq_number = gpio_to_irq(gpio);
+	if (irq_number < 0) {
+		pr_err("Failed to retrieve IRQ number for GPIO. Exiting.\n");
+		return irq_number;
+	}
+	
+	pr_info("Assigned IRQ number %d\n", irq_number);
+
+	ret = request_irq(irq_number,
+			dht22_irq_handler,
+			(IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING),
+			"dht22_gpio_handler",
+			NULL);
+	if (ret < 0) {
+		pr_err("request_irq() failed. Exiting.\n");
+	}
+	
+	return ret;
+}
+
+struct dht22_sm *create_sm(void)
+{
+	struct dht22_sm *sm;
+	struct mutex lock;
+
+	sm = kmalloc(sizeof(struct dht22_sm), GFP_KERNEL);
+	if (!sm) {
+		pr_err("Could not create state machine. Exiting...\n");
+		return ERR_PTR(-ENOMEM);
+	}
+
+	mutex_init(&lock);
+	sm->lock = lock;
+	
+	sm->change_state = change_dht22_sm_state;
+	sm->reset = reset_dht22_sm;
+
+	return sm;
+}
+
+void destroy_sm(struct dht22_sm *sm)
+{
+	mutex_destroy(&sm->lock);
+	kfree(sm);	
 }
 
 enum dht22_state get_next_state_idle(void)
 {
-	if (triggered)
+	if (sm->triggered)
 		return RESPONDING;
 
 	return IDLE;
@@ -223,7 +325,7 @@ enum dht22_state get_next_state_idle(void)
 
 enum dht22_state get_next_state_responding(void)
 {
-	if (finished)
+	if (sm->finished)
 		return FINISHED;
 
 	return RESPONDING;
@@ -239,14 +341,32 @@ enum dht22_state get_next_state_error(void)
 	return IDLE;
 }
 
+void change_dht22_sm_state(struct dht22_sm *sm)
+{
+	sm->state = (*state_functions[sm->state])();
+}
+
+void reset_dht22_sm(struct dht22_sm *sm)
+{
+	sm->state = IDLE;
+	sm->finished = false;
+	sm->triggered = false;	
+}
+
 static void process_data(void)
 {
-	int i, bit_value, current_byte, current_bit;
+	int i, bit_value, current_byte, current_bit, start_idx;
 
-	for (i = 6; i < 6 + 80; i += 2) {
-		bit_value = irq_deltas[i] < PREP_SIGNAL_LEN ? 0 : 1;
-		current_byte = (i - 6) / (2 * BITS_PER_BYTE);
-		current_bit = 7 - (((i - 6) % (2 * BITS_PER_BYTE)) / 2);
+	/*
+	 * Skip the triggering and initial response irq deltas and process
+	 * the data irq deltas (2 for each bit, a start signal and the value).
+	 * Most significant bits arrive first.
+	 */
+	start_idx = TRIGGER_IRQ_COUNT + INIT_RESPONSE_IRQ_COUNT;
+	for (i = start_idx; i < start_idx + DATA_IRQ_COUNT ; i += 2) {
+		bit_value = irq_deltas[i + 1] < PREP_SIGNAL_LEN ? 0 : 1;
+		current_byte = (i - start_idx) / (BITS_PER_BYTE << 1);
+		current_bit = 7 - (((i - start_idx) % (BITS_PER_BYTE << 1)) >> 1);
 		sensor_data[current_byte] |= bit_value << current_bit;
 	}
 }
@@ -257,11 +377,18 @@ static void process_results(struct work_struct *work)
 
 	process_data();
 
-	hash = (sensor_data[0] + sensor_data[1] + sensor_data[2] + sensor_data[3]) & 0xFF;
+	hash = sensor_data[0] + sensor_data[1] + sensor_data[2] + sensor_data[3];
+	hash &= 0xFF;
 	if (hash != sensor_data[4]) {
 		pr_err("Hash mismatch. Stopping. (%d, %d, %d, %d, %d)\n",
-				sensor_data[0], sensor_data[1], sensor_data[2], sensor_data[3], sensor_data[4]);
-		sm_state = ERROR;
+				sensor_data[0],
+				sensor_data[1],
+				sensor_data[2],
+				sensor_data[3],
+				sensor_data[4]);
+		sm->state = ERROR;
+		reset_data();
+		sm->reset(sm);
 		return;
 	}
 
