@@ -11,7 +11,6 @@
 
 /* 
  * TODO: Implement the following:
- * - timer/s to check whether the expected interrupt took too long;
  * - export to sysfs
  */
 
@@ -54,6 +53,8 @@ static struct dht22_sm * create_sm(void);
 static void destroy_sm(struct dht22_sm *sm);
 static void change_dht22_sm_state(struct dht22_sm *sm);
 static void handle_dht22_state(struct dht22_sm *sm);
+static void sm_work_func(struct work_struct *work);
+static void cleanup_work_func(struct work_struct *work);
 
 static void reset_dht22_sm(struct dht22_sm *sm);
 
@@ -111,6 +112,20 @@ static int irq_deltas[EXPECTED_IRQ_COUNT];
 static int sensor_data[DATA_SIZE];
 
 static DECLARE_WORK(work, process_results);
+static DECLARE_WORK(cleanup_work, cleanup_work_func);
+static DECLARE_WORK(sm_work_0, sm_work_func);
+static DECLARE_WORK(sm_work_1, sm_work_func);
+static DECLARE_WORK(sm_work_2, sm_work_func);
+static DECLARE_WORK(sm_work_3, sm_work_func);
+static DECLARE_WORK(sm_work_4, sm_work_func);
+
+static struct work_struct *workers[] = {
+	&sm_work_0,
+	&sm_work_1,
+	&sm_work_2,
+	&sm_work_3,
+	&sm_work_4
+};
 
 static int gpio = GPIO_DEFAULT;
 module_param(gpio, int, S_IRUGO);
@@ -193,11 +208,6 @@ static void trigger_sensor(void)
 	 * - send start signal (pull line LOW): 20 ms LOW
 	 * - end start signal (stop pulling LOW): 40 us HIGH
 	 */
-	if (sm->triggered) {
-		pr_info("Ooops, didn't clean up somewhere...\n");
-		return;
-	}
-
 	pr_info("Sensor triggered\n");
 	sm->triggered = true;
 	sm->state = RESPONDING;
@@ -237,15 +247,19 @@ static enum hrtimer_restart timer_func(struct hrtimer *hrtimer)
 	 * observed in quick succession. Need to figure out a way to recover in a
 	 * more graceful way.
 	 */
+	ktime_t delay;
+
+	delay = ktime_set(0, 0);
 	if (processed_irq_count) {
+		pr_info("Resetting. Something went wrong... Processed IRQs: %d\n", processed_irq_count);
 		reset_data();
 		sm->reset(sm);
-		pr_info("Resetting. Something went wrong...\n");
+		delay = ktime_set(1, 0); /* Delay the next trigger event to prevent multple successive errors */
 	}
 
 	trigger_sensor();
 	
-	hrtimer_forward_now(hrtimer, kt_interval); 	
+	hrtimer_forward_now(hrtimer, ktime_add(kt_interval, delay)); 	
 	return (autoupdate ? HRTIMER_RESTART : HRTIMER_NORESTART);	
 }
 
@@ -265,38 +279,12 @@ static irqreturn_t dht22_irq_handler(int irq, void *data)
 	irq_deltas[processed_irq_count++] = (int)(ts_gpio_switch_diff.tv_nsec / NSEC_PER_USEC); 
 	ts_prev_gpio_switch = ts_current_gpio_switch;
 	
-	//pr_info("irq: #%02d; state: %d; delta: %d\n", processed_irq_count, sm->state, irq_deltas[processed_irq_count - 1]);
-	//return IRQ_HANDLED;
 	if (processed_irq_count == EXPECTED_IRQ_COUNT) {
 		sm->finished = true;
-	//	goto irq_handle;
 	}
 
-//	(*state_functions[sm->state])(sm);
-	//sm->change_state(sm);
 irq_handle:
-	//if (sm->state == ERROR || sm->state == FINISHED)
-		//sm->handle_state(sm);
-	//	(*handler_functions[sm->state])(sm);
-	switch (sm->state) {
-	case IDLE:
-		break;
-	case RESPONDING:
-		if (sm->finished && !sm->error) {
-			schedule_work(&work);
-			sm->state = FINISHED;
-		} else if (sm->finished && sm->error) {
-			reset_data();
-			sm->reset(sm);
-			sm->state = IDLE;
-		}
-		break;
-	case FINISHED:
-		break;
-	case ERROR:
-	default:
-		break;
-	}
+	schedule_work(workers[processed_irq_count % ARRAY_SIZE(workers)]);
 
 	return IRQ_HANDLED;
 }
@@ -425,15 +413,25 @@ static inline void handle_dht22_state(struct dht22_sm *sm)
 
 static void handle_idle(struct dht22_sm *sm)
 {
-	if (sm->dirty) {
-		reset_data();
-		sm->reset(sm);
-	}
+	if (sm->dirty)
+		schedule_work(&cleanup_work);
 }
 
 static void handle_finished(struct dht22_sm *sm)
 {
 	schedule_work(&work);
+}
+
+static void sm_work_func(struct work_struct *work)
+{
+	sm->change_state(sm);
+	sm->handle_state(sm);	
+}
+
+static void cleanup_work_func(struct work_struct *work)
+{
+	reset_data();
+	sm->reset(sm);
 }
 
 static void reset_dht22_sm(struct dht22_sm *sm)
@@ -478,11 +476,7 @@ static void process_results(struct work_struct *work)
 				sensor_data[2],
 				sensor_data[3],
 				sensor_data[4]);
-		reset_data();
-		sm->reset(sm);
-		//sm->change_state(sm);
-		//sm->handle_state(sm);
-		//pr_info("state after hash mismatch: %d\n", sm->state);
+		schedule_work(&cleanup_work);
 		return;
 	}
 
@@ -496,10 +490,8 @@ static void process_results(struct work_struct *work)
 		temperature % 10,	
 		humidity / 10,
 		humidity % 10);
-
-	reset_data();
-	sm->reset(sm);
-	sm->state = IDLE;
+	
+	schedule_work(&cleanup_work);
 }
 
 module_init(dht22_init);
