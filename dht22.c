@@ -9,17 +9,19 @@
 #include <linux/ktime.h>
 #include <linux/hrtimer.h>
 
-/* 
+/*
  * TODO: Implement the following:
  * - export to sysfs
  */
 
 #define GPIO_DEFAULT 23
 #define AUTOUPDATE_DEFAULT false
-#define AUTOUPDATE_TIMEOUT_MIN 2000 /* 2s minimum between readings, 5s empirically */
+
+/* 2s minimum between readings, 5s empirically */
+#define AUTOUPDATE_TIMEOUT_MIN 2000
 #define DATA_SIZE 5 /* Number of bytes the DHT22 sensor sends */
 #define BITS_PER_BYTE 8
-#define EXPECTED_IRQ_COUNT 86
+#define EXPECTED_IRQ_COUNT 86 /* The total number of interrupts to process */
 #define TRIGGER_IRQ_COUNT 3
 #define INIT_RESPONSE_IRQ_COUNT 2
 #define DATA_IRQ_COUNT 80
@@ -75,7 +77,8 @@ enum dht22_state {
 	COUNT_STATES
 };
 
-static enum dht22_state (*state_functions[COUNT_STATES])(struct dht22_sm *sm) = {
+static enum dht22_state
+(*state_functions[COUNT_STATES])(struct dht22_sm *sm) = {
 	get_next_state_idle,
 	get_next_state_responding,
 	get_next_state_finished,
@@ -129,15 +132,17 @@ static struct work_struct *workers[] = {
 
 static int gpio = GPIO_DEFAULT;
 module_param(gpio, int, S_IRUGO);
-MODULE_PARM_DESC(gpio, "GPIO number of the DHT22's data pin (default = 6)");
+MODULE_PARM_DESC(gpio, "GPIO number of the DHT22's data pin (default = 23)");
 
 static bool autoupdate = false;
 module_param(autoupdate, bool, S_IRUGO);
-MODULE_PARM_DESC(autoupdate, "Re-trigger sensor automatically? (default = false)");
+MODULE_PARM_DESC(autoupdate,
+	"Re-trigger sensor automatically? (default = false)");
 
 static int autoupdate_timeout = AUTOUPDATE_TIMEOUT_MIN;
 module_param(autoupdate_timeout, int, S_IRUGO);
-MODULE_PARM_DESC(autoupdate_timeout, "Interval between trigger events for the sensor (default = 2s)");
+MODULE_PARM_DESC(autoupdate_timeout,
+	"Interval between trigger events for the sensor (default = 2s)");
 
 static int __init dht22_init(void)
 {
@@ -151,30 +156,30 @@ static int __init dht22_init(void)
 		ret = PTR_ERR(sm);
 		goto out;
 	}
-	
+
 	sm->reset(sm);
 
 	ret = setup_dht22_gpio(gpio);
-	if (ret) 
+	if (ret)
 		goto gpio_err;
-		
-	getnstimeofday64(&ts_prev_gpio_switch);	
+
+	getnstimeofday64(&ts_prev_gpio_switch);
 	ret = setup_dht22_irq(gpio);
-	if (ret) 
+	if (ret)
 		goto irq_err;
-	
+
 	reset_data();
 
 	if (autoupdate_timeout < AUTOUPDATE_TIMEOUT_MIN)
 		autoupdate_timeout = AUTOUPDATE_TIMEOUT_MIN;
 
 	kt_interval = ktime_set(autoupdate_timeout / MSEC_PER_SEC,
-				(autoupdate_timeout % MSEC_PER_SEC) * NSEC_PER_USEC);
+			(autoupdate_timeout % MSEC_PER_SEC) * NSEC_PER_USEC);
 
 	hrtimer_init(&timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	timer.function = timer_func;
 	hrtimer_start(&timer, kt_interval, HRTIMER_MODE_REL);
-	
+
 	pr_info("DHT22 module finished loading.\n");
 	goto out;
 
@@ -202,7 +207,7 @@ static void __exit dht22_exit(void)
 
 static void trigger_sensor(void)
 {
-	/* 
+	/*
 	 * According to datasheet the triggering signal is as follows:
 	 * - prepare (wait some time while line is HIGH): 250 ms
 	 * - send start signal (pull line LOW): 20 ms LOW
@@ -242,43 +247,47 @@ static enum hrtimer_restart timer_func(struct hrtimer *hrtimer)
 	 * reading is still ongoig (either the sensor was slow to respond or
 	 * we missed an interrupt and never reached the finish state).
 	 * Reset the state to allow the sensor to continue.
-	 * In trials this shows effective insofar as the sensor manages to recover
-	 * and starts the next reading. However, sequences of errors are sometimes
-	 * observed in quick succession. Need to figure out a way to recover in a
-	 * more graceful way.
+	 * In trials this shows effective insofar as the sensor manages to
+	 * recover and starts the next reading. However, sequences of errors
+	 * are sometimes observed in quick succession. Need to figure out a
+	 * way to recover in a more graceful way.
 	 */
 	ktime_t delay;
 
 	delay = ktime_set(0, 0);
 	if (processed_irq_count) {
-		pr_info("Resetting. Something went wrong... Processed IRQs: %d\n", processed_irq_count);
+		pr_info("Resetting. Processed IRQs: %d\n", processed_irq_count);
 		reset_data();
 		sm->reset(sm);
-		delay = ktime_set(1, 0); /* Delay the next trigger event to prevent multple successive errors */
+		/*
+		 * Delay the next trigger event to prevent multple successive
+		 * errors. Doesn't seem to have a tangible positive effect...
+		 */
+		delay = ktime_set(1, 0);
 	}
 
 	trigger_sensor();
-	
-	hrtimer_forward_now(hrtimer, ktime_add(kt_interval, delay)); 	
-	return (autoupdate ? HRTIMER_RESTART : HRTIMER_NORESTART);	
+
+	hrtimer_forward_now(hrtimer, ktime_add(kt_interval, delay));
+	return (autoupdate ? HRTIMER_RESTART : HRTIMER_NORESTART);
 }
 
 static irqreturn_t dht22_irq_handler(int irq, void *data)
 {
-	struct timespec64 ts_current_gpio_switch, ts_gpio_switch_diff;
+	struct timespec64 ts_current_irq, ts_diff;
 
 	if (!sm->triggered || processed_irq_count >= EXPECTED_IRQ_COUNT) {
 		sm->error = true;
 		goto irq_handle;
 	}
 
-	getnstimeofday64(&ts_current_gpio_switch);
-	ts_gpio_switch_diff = timespec64_sub(ts_current_gpio_switch,
-						ts_prev_gpio_switch);
+	getnstimeofday64(&ts_current_irq);
+	ts_diff = timespec64_sub(ts_current_irq, ts_prev_gpio_switch);
 
-	irq_deltas[processed_irq_count++] = (int)(ts_gpio_switch_diff.tv_nsec / NSEC_PER_USEC); 
-	ts_prev_gpio_switch = ts_current_gpio_switch;
-	
+	irq_deltas[processed_irq_count] = (int)(ts_diff.tv_nsec / NSEC_PER_USEC);
+	processed_irq_count++;
+	ts_prev_gpio_switch = ts_current_irq;
+
 	if (processed_irq_count == EXPECTED_IRQ_COUNT) {
 		sm->finished = true;
 	}
@@ -297,8 +306,8 @@ static int setup_dht22_gpio(int gpio)
 	if (!gpio_is_valid(gpio)) {
 		pr_err("Failed validation of GPIO %d\n", gpio);
 		return -EINVAL;
-	}  
-	
+	}
+
 	pr_info("Validation succeeded for GPIO %d\n", gpio);
 
 	ret = gpio_request(gpio, "sysfs");
@@ -324,7 +333,7 @@ static int setup_dht22_irq(int gpio)
 		pr_err("Failed to retrieve IRQ number for GPIO. Exiting.\n");
 		return irq_number;
 	}
-	
+
 	pr_info("Assigned IRQ number %d\n", irq_number);
 
 	ret = request_irq(irq_number,
@@ -425,7 +434,7 @@ static void handle_finished(struct dht22_sm *sm)
 static void sm_work_func(struct work_struct *work)
 {
 	sm->change_state(sm);
-	sm->handle_state(sm);	
+	sm->handle_state(sm);
 }
 
 static void cleanup_work_func(struct work_struct *work)
@@ -487,10 +496,10 @@ static void process_results(struct work_struct *work)
 
 	pr_info("Temperature: %d.%d C; Humidity: %d.%d%%\n",
 		temperature / 10,
-		temperature % 10,	
+		temperature % 10,
 		humidity / 10,
 		humidity % 10);
-	
+
 	schedule_work(&cleanup_work);
 }
 
