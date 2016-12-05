@@ -9,100 +9,13 @@
 #include <linux/ktime.h>
 #include <linux/hrtimer.h>
 
+#include "dht22.h"
+#include "dht22_sm.h"
+
 /*
  * TODO: Implement the following:
  * - export to sysfs
  */
-
-#define GPIO_DEFAULT 23
-#define AUTOUPDATE_DEFAULT false
-
-/* 2s minimum between readings, 5s empirically */
-#define AUTOUPDATE_TIMEOUT_MIN 2000
-#define DATA_SIZE 5 /* Number of bytes the DHT22 sensor sends */
-#define BITS_PER_BYTE 8
-#define EXPECTED_IRQ_COUNT 86 /* The total number of interrupts to process */
-#define TRIGGER_IRQ_COUNT 3
-#define INIT_RESPONSE_IRQ_COUNT 2
-#define DATA_IRQ_COUNT 80
-
-#define LOW 0
-#define HIGH 1
-
-/* signal lengths in ms */
-#define TRIGGER_DELAY 250
-#define TRIGGER_SIGNAL_LEN 20
-
-/* signal lengths in us */
-#define TRIGGER_POST_DELAY 40
-#define INIT_RESPONSE_LEN 80
-#define PREP_SIGNAL_LEN 50
-#define ZERO_BIT 28
-#define ONE_BIT 75
-#define TOLERANCE 15 /* Each irq delta should deviate +/- 15us at most */
-
-static void trigger_sensor(void);
-static void reset_data(void);
-static enum hrtimer_restart timer_func(struct hrtimer *);
-
-static irqreturn_t dht22_irq_handler(int irq, void *data);
-static void process_results(struct work_struct *work);
-static void process_data(void);
-
-static int setup_dht22_gpio(int gpio);
-static int setup_dht22_irq(int gpio);
-static struct dht22_sm * create_sm(void);
-static void destroy_sm(struct dht22_sm *sm);
-static void change_dht22_sm_state(struct dht22_sm *sm);
-static void handle_dht22_state(struct dht22_sm *sm);
-static void sm_work_func(struct work_struct *work);
-static void cleanup_work_func(struct work_struct *work);
-
-static void reset_dht22_sm(struct dht22_sm *sm);
-
-static enum dht22_state get_next_state_idle(struct dht22_sm *sm);
-static enum dht22_state get_next_state_responding(struct dht22_sm *sm);
-static enum dht22_state get_next_state_finished(struct dht22_sm *sm);
-static enum dht22_state get_next_state_error(struct dht22_sm *sm);
-
-static void handle_idle(struct dht22_sm *sm);
-static void handle_finished(struct dht22_sm *sm);
-static void noop(struct dht22_sm *sm) { }
-
-enum dht22_state {
-	IDLE = 0,
-	RESPONDING,
-	FINISHED,
-	ERROR,
-	COUNT_STATES
-};
-
-static enum dht22_state
-(*state_functions[COUNT_STATES])(struct dht22_sm *sm) = {
-	get_next_state_idle,
-	get_next_state_responding,
-	get_next_state_finished,
-	get_next_state_error
-};
-
-static void (*handler_functions[COUNT_STATES])(struct dht22_sm *sm) = {
-	handle_idle,
-	noop,
-	handle_finished,
-	noop
-};
-
-struct dht22_sm {
-	enum dht22_state state;
-	void (*change_state)(struct dht22_sm *sm);
-	void (*handle_state)(struct dht22_sm *sm);
-	void (*reset)(struct dht22_sm *sm);
-	bool finished;
-	bool triggered;
-	bool error;
-	bool dirty;
-	struct mutex lock;
-};
 
 static struct dht22_sm *sm;
 static struct timespec64 ts_prev_gpio_switch, ts_prev_reading;
@@ -158,6 +71,8 @@ static int __init dht22_init(void)
 	}
 
 	sm->reset(sm);
+	sm->work = work;
+	sm->cleanup_work = cleanup_work;
 
 	ret = setup_dht22_gpio(gpio);
 	if (ret)
@@ -165,9 +80,12 @@ static int __init dht22_init(void)
 
 	getnstimeofday64(&ts_prev_gpio_switch);
 	ret = setup_dht22_irq(gpio);
+	pr_info("ret after irq_request: %d\n", ret);
 	if (ret)
 		goto irq_err;
 
+	pr_info("IRQ taken\n");
+	return 0;
 	reset_data();
 
 	if (autoupdate_timeout < AUTOUPDATE_TIMEOUT_MIN)
@@ -195,7 +113,7 @@ out:
 
 static void __exit dht22_exit(void)
 {
-	hrtimer_cancel(&timer);
+//	hrtimer_cancel(&timer);
 	free_irq(irq_number, NULL);
 //	gpio_unexport(gpio);
 	gpio_free(gpio);
@@ -278,7 +196,8 @@ static irqreturn_t dht22_irq_handler(int irq, void *data)
 
 	if (!sm->triggered || processed_irq_count >= EXPECTED_IRQ_COUNT) {
 		sm->error = true;
-		goto irq_handle;
+		schedule_work(workers[processed_irq_count % ARRAY_SIZE(workers)]);
+		return IRQ_HANDLED;
 	}
 
 	getnstimeofday64(&ts_current_irq);
@@ -292,7 +211,6 @@ static irqreturn_t dht22_irq_handler(int irq, void *data)
 		sm->finished = true;
 	}
 
-irq_handle:
 	schedule_work(workers[processed_irq_count % ARRAY_SIZE(workers)]);
 
 	return IRQ_HANDLED;
@@ -335,7 +253,6 @@ static int setup_dht22_irq(int gpio)
 	}
 
 	pr_info("Assigned IRQ number %d\n", irq_number);
-
 	ret = request_irq(irq_number,
 			dht22_irq_handler,
 			(IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING),
@@ -344,91 +261,8 @@ static int setup_dht22_irq(int gpio)
 	if (ret < 0) {
 		pr_err("request_irq() failed. Exiting.\n");
 	}
-	
+
 	return ret;
-}
-
-static struct dht22_sm *create_sm(void)
-{
-	struct dht22_sm *sm;
-	struct mutex lock;
-
-	sm = kmalloc(sizeof(struct dht22_sm), GFP_KERNEL);
-	if (!sm) {
-		pr_err("Could not create state machine. Exiting...\n");
-		return ERR_PTR(-ENOMEM);
-	}
-
-	mutex_init(&lock);
-	sm->lock = lock;
-	
-	sm->change_state = change_dht22_sm_state;
-	sm->handle_state = handle_dht22_state;
-	sm->reset = reset_dht22_sm;
-
-	return sm;
-}
-
-static void destroy_sm(struct dht22_sm *sm)
-{
-	mutex_destroy(&sm->lock);
-	kfree(sm);	
-}
-
-static enum dht22_state get_next_state_idle(struct dht22_sm *sm)
-{
-	if (sm->error)
-		return ERROR;
-
-	if (sm->triggered)
-		return RESPONDING;
-
-	return IDLE;
-}
-
-static enum dht22_state get_next_state_responding(struct dht22_sm *sm)
-{
-	if (sm->error)
-		return ERROR;
-
-	if (sm->finished)
-		return FINISHED;
-
-	return RESPONDING;
-}
-
-static enum dht22_state get_next_state_finished(struct dht22_sm *sm)
-{
-	if (sm->error)
-		return ERROR;
-
-	return IDLE;
-}
-
-static enum dht22_state get_next_state_error(struct dht22_sm *sm)
-{
-	return IDLE;
-}
-
-static void change_dht22_sm_state(struct dht22_sm *sm)
-{
-	sm->state = (*state_functions[sm->state])(sm);
-}
-
-static inline void handle_dht22_state(struct dht22_sm *sm)
-{
-	(*handler_functions[sm->state])(sm);
-}
-
-static void handle_idle(struct dht22_sm *sm)
-{
-	if (sm->dirty)
-		schedule_work(&cleanup_work);
-}
-
-static void handle_finished(struct dht22_sm *sm)
-{
-	schedule_work(&work);
 }
 
 static void sm_work_func(struct work_struct *work)
@@ -441,15 +275,6 @@ static void cleanup_work_func(struct work_struct *work)
 {
 	reset_data();
 	sm->reset(sm);
-}
-
-static void reset_dht22_sm(struct dht22_sm *sm)
-{
-	sm->state = IDLE;
-	sm->finished = false;
-	sm->triggered = false;	
-	sm->error = false;
-	sm->dirty = false;
 }
 
 static void process_data(void)
