@@ -27,6 +27,7 @@ static struct hrtimer timer;
 static int irq_deltas[EXPECTED_IRQ_COUNT];
 static int sensor_data[DATA_SIZE];
 
+static DECLARE_WORK(trigger_work, trigger_sensor);
 static DECLARE_WORK(work, process_results);
 static DECLARE_WORK(cleanup_work, cleanup_work_func);
 static DECLARE_WORK(sm_work_0, sm_work_func);
@@ -121,7 +122,7 @@ static void __exit dht22_exit(void)
 	pr_info("DHT22 module unloaded\n");
 }
 
-static void trigger_sensor(void)
+static void trigger_sensor(struct work_struct *work)
 {
 	/*
 	 * According to datasheet the triggering signal is as follows:
@@ -181,7 +182,7 @@ static enum hrtimer_restart timer_func(struct hrtimer *hrtimer)
 		delay = ktime_set(1, 0);
 	}
 
-	trigger_sensor();
+	schedule_work(&trigger_work);
 
 	hrtimer_forward_now(hrtimer, ktime_add(kt_interval, delay));
 	return (autoupdate ? HRTIMER_RESTART : HRTIMER_NORESTART);

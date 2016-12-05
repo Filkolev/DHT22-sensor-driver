@@ -30,7 +30,7 @@
 #define ONE_BIT 75
 #define TOLERANCE 15 /* Each irq delta should deviate +/- 15us at most */
 
-static void trigger_sensor(void);
+static void trigger_sensor(struct work_struct *work);
 static void reset_data(void);
 static enum hrtimer_restart timer_func(struct hrtimer *);
 
