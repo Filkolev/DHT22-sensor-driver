@@ -1,5 +1,19 @@
 #include "dht22_sm.h"
 
+static void reset_dht22_sm(struct dht22_sm *sm);
+
+static enum dht22_state get_next_state_idle(struct dht22_sm *sm);
+static enum dht22_state get_next_state_responding(struct dht22_sm *sm);
+static enum dht22_state get_next_state_finished(struct dht22_sm *sm);
+static enum dht22_state get_next_state_error(struct dht22_sm *sm);
+
+static void handle_idle(struct dht22_sm *sm);
+static void handle_finished(struct dht22_sm *sm);
+static void noop(struct dht22_sm *sm);
+
+static void change_dht22_sm_state(struct dht22_sm *sm);
+static void handle_dht22_state(struct dht22_sm *sm);
+
 static enum dht22_state
 (*state_functions[COUNT_STATES])(struct dht22_sm *sm) = {
 	get_next_state_idle,
@@ -15,7 +29,7 @@ static void (*handler_functions[COUNT_STATES])(struct dht22_sm *sm) = {
 	noop
 };
 
-void noop(struct dht22_sm *sm) { }
+static void noop(struct dht22_sm *sm) { }
 
 struct dht22_sm *create_sm(void)
 {
@@ -32,6 +46,8 @@ struct dht22_sm *create_sm(void)
 	sm->lock = lock;
 
 	sm->reset = reset_dht22_sm;
+	sm->change_state = change_dht22_sm_state;
+	sm->handle_state = handle_dht22_state;
 
 	return sm;
 }
@@ -42,7 +58,7 @@ void destroy_sm(struct dht22_sm *sm)
 	kfree(sm);
 }
 
-enum dht22_state get_next_state_idle(struct dht22_sm *sm)
+static enum dht22_state get_next_state_idle(struct dht22_sm *sm)
 {
 	if (sm->error)
 		return ERROR;
@@ -53,7 +69,7 @@ enum dht22_state get_next_state_idle(struct dht22_sm *sm)
 	return IDLE;
 }
 
-enum dht22_state get_next_state_responding(struct dht22_sm *sm)
+static enum dht22_state get_next_state_responding(struct dht22_sm *sm)
 {
 	if (sm->error)
 		return ERROR;
@@ -64,7 +80,7 @@ enum dht22_state get_next_state_responding(struct dht22_sm *sm)
 	return RESPONDING;
 }
 
-enum dht22_state get_next_state_finished(struct dht22_sm *sm)
+static enum dht22_state get_next_state_finished(struct dht22_sm *sm)
 {
 	if (sm->error)
 		return ERROR;
@@ -72,33 +88,33 @@ enum dht22_state get_next_state_finished(struct dht22_sm *sm)
 	return IDLE;
 }
 
-enum dht22_state get_next_state_error(struct dht22_sm *sm)
+static enum dht22_state get_next_state_error(struct dht22_sm *sm)
 {
 	return IDLE;
 }
 
-void handle_idle(struct dht22_sm *sm)
+static void handle_idle(struct dht22_sm *sm)
 {
 	if (sm->dirty)
-		schedule_work(&sm->cleanup_work);
+		schedule_work(sm->cleanup_work);
 }
 
-void handle_finished(struct dht22_sm *sm)
+static void handle_finished(struct dht22_sm *sm)
 {
-	schedule_work(&sm->work);
+	schedule_work(sm->work);
 }
 
-void change_dht22_sm_state(struct dht22_sm *sm)
+static void change_dht22_sm_state(struct dht22_sm *sm)
 {
 	sm->state = (*state_functions[sm->state])(sm);
 }
 
-void handle_dht22_state(struct dht22_sm *sm)
+static void handle_dht22_state(struct dht22_sm *sm)
 {
 	(*handler_functions[sm->state])(sm);
 }
 
-void reset_dht22_sm(struct dht22_sm *sm)
+static void reset_dht22_sm(struct dht22_sm *sm)
 {
 	sm->state = IDLE;
 	sm->finished = false;

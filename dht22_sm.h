@@ -6,20 +6,6 @@
 struct dht22_sm * create_sm(void);
 void destroy_sm(struct dht22_sm *sm);
 
-void reset_dht22_sm(struct dht22_sm *sm);
-
-enum dht22_state get_next_state_idle(struct dht22_sm *sm);
-enum dht22_state get_next_state_responding(struct dht22_sm *sm);
-enum dht22_state get_next_state_finished(struct dht22_sm *sm);
-enum dht22_state get_next_state_error(struct dht22_sm *sm);
-
-void handle_idle(struct dht22_sm *sm);
-void handle_finished(struct dht22_sm *sm);
-void noop(struct dht22_sm *sm);
-
-void change_dht22_sm_state(struct dht22_sm *sm);
-void handle_dht22_state(struct dht22_sm *sm);
-
 enum dht22_state {
 	IDLE = 0,
 	RESPONDING,
@@ -38,6 +24,6 @@ struct dht22_sm {
 	bool error;
 	bool dirty;
 	struct mutex lock;
-	struct work_struct work;
-	struct work_struct cleanup_work;
+	struct work_struct *work;
+	struct work_struct *cleanup_work;
 };

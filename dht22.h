@@ -1,6 +1,6 @@
 #include <linux/hrtimer.h>
 
-#define GPIO_DEFAULT 23
+#define GPIO_DEFAULT 6
 #define AUTOUPDATE_DEFAULT false
 
 /*
@@ -19,8 +19,8 @@
 #define HIGH 1
 
 /* signal lengths in ms */
-#define TRIGGER_DELAY 250
-#define TRIGGER_SIGNAL_LEN 20
+#define TRIGGER_DELAY 100
+#define TRIGGER_SIGNAL_LEN 10
 
 /* signal lengths in us */
 #define TRIGGER_POST_DELAY 40

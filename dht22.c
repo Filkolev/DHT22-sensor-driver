@@ -71,8 +71,8 @@ static int __init dht22_init(void)
 	}
 
 	sm->reset(sm);
-	sm->work = work;
-	sm->cleanup_work = cleanup_work;
+	sm->work = &work;
+	sm->cleanup_work = &cleanup_work;
 
 	ret = setup_dht22_gpio(gpio);
 	if (ret)
@@ -80,12 +80,10 @@ static int __init dht22_init(void)
 
 	getnstimeofday64(&ts_prev_gpio_switch);
 	ret = setup_dht22_irq(gpio);
-	pr_info("ret after irq_request: %d\n", ret);
+	
 	if (ret)
 		goto irq_err;
 
-	pr_info("IRQ taken\n");
-	return 0;
 	reset_data();
 
 	if (autoupdate_timeout < AUTOUPDATE_TIMEOUT_MIN)
@@ -96,7 +94,7 @@ static int __init dht22_init(void)
 
 	hrtimer_init(&timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	timer.function = timer_func;
-	hrtimer_start(&timer, kt_interval, HRTIMER_MODE_REL);
+	hrtimer_start(&timer, ktime_set(0, 1 * NSEC_PER_USEC), HRTIMER_MODE_REL);
 
 	pr_info("DHT22 module finished loading.\n");
 	goto out;
@@ -113,7 +111,7 @@ out:
 
 static void __exit dht22_exit(void)
 {
-//	hrtimer_cancel(&timer);
+	hrtimer_cancel(&timer);
 	free_irq(irq_number, NULL);
 //	gpio_unexport(gpio);
 	gpio_free(gpio);
@@ -131,7 +129,6 @@ static void trigger_sensor(void)
 	 * - send start signal (pull line LOW): 20 ms LOW
 	 * - end start signal (stop pulling LOW): 40 us HIGH
 	 */
-	pr_info("Sensor triggered\n");
 	sm->triggered = true;
 	sm->state = RESPONDING;
 	getnstimeofday64(&ts_prev_reading);
@@ -196,8 +193,7 @@ static irqreturn_t dht22_irq_handler(int irq, void *data)
 
 	if (!sm->triggered || processed_irq_count >= EXPECTED_IRQ_COUNT) {
 		sm->error = true;
-		schedule_work(workers[processed_irq_count % ARRAY_SIZE(workers)]);
-		return IRQ_HANDLED;
+		goto handle_irq;
 	}
 
 	getnstimeofday64(&ts_current_irq);
@@ -211,6 +207,7 @@ static irqreturn_t dht22_irq_handler(int irq, void *data)
 		sm->finished = true;
 	}
 
+handle_irq:
 	schedule_work(workers[processed_irq_count % ARRAY_SIZE(workers)]);
 
 	return IRQ_HANDLED;
