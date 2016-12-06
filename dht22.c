@@ -275,6 +275,8 @@ static int setup_dht22_irq(int gpio)
 		pr_err("request_irq() failed. Exiting.\n");
 	}
 
+	irq_set_affinity_hint(irq_number, NULL);
+
 	return ret;
 }
 
