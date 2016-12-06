@@ -96,12 +96,12 @@ static enum dht22_state get_next_state_error(struct dht22_sm *sm)
 static void handle_idle(struct dht22_sm *sm)
 {
 	if (sm->dirty)
-		schedule_work(sm->cleanup_work);
+		queue_work(sm->queue, sm->cleanup_work);
 }
 
 static void handle_finished(struct dht22_sm *sm)
 {
-	schedule_work(sm->work);
+	queue_work(sm->queue, sm->work);
 }
 
 static void change_dht22_sm_state(struct dht22_sm *sm)

@@ -26,4 +26,5 @@ struct dht22_sm {
 	struct mutex lock;
 	struct work_struct *work;
 	struct work_struct *cleanup_work;
+	struct workqueue_struct *queue;
 };

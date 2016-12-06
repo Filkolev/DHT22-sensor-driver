@@ -27,6 +27,8 @@ static struct hrtimer timer;
 static int irq_deltas[EXPECTED_IRQ_COUNT];
 static int sensor_data[DATA_SIZE];
 
+static struct workqueue_struct *queue;
+
 static DECLARE_WORK(trigger_work, trigger_sensor);
 static DECLARE_WORK(work, process_results);
 static DECLARE_WORK(cleanup_work, cleanup_work_func);
@@ -64,6 +66,18 @@ static int __init dht22_init(void)
 
 	pr_info("DHT22 module loading...\n");
 	ret = 0;
+	
+	/*
+	 * Create a workqueue with high priority which can only run one
+	 * work item at a time. The strict execution ordering is mandated
+	 * by the need to ensure the state machine processes its state
+	 * properly.
+	 * In case we fail to allocate the workqueue, we fall back to the
+	 * system high-prio workqueue.
+	 */
+	queue = alloc_workqueue("dht22_queue", WQ_HIGHPRI, 1);
+	if (!queue)
+		queue = system_highpri_wq;
 
 	sm = create_sm();
 	if (IS_ERR(sm)) {
@@ -74,6 +88,7 @@ static int __init dht22_init(void)
 	sm->reset(sm);
 	sm->work = &work;
 	sm->cleanup_work = &cleanup_work;
+	sm->queue = queue;
 
 	ret = setup_dht22_gpio(gpio);
 	if (ret)
@@ -95,7 +110,7 @@ static int __init dht22_init(void)
 
 	hrtimer_init(&timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	timer.function = timer_func;
-	hrtimer_start(&timer, ktime_set(0, 1 * NSEC_PER_USEC), HRTIMER_MODE_REL);
+	hrtimer_start(&timer, ktime_set(0, 100 * NSEC_PER_USEC), HRTIMER_MODE_REL);
 
 	pr_info("DHT22 module finished loading.\n");
 	goto out;
@@ -182,7 +197,7 @@ static enum hrtimer_restart timer_func(struct hrtimer *hrtimer)
 		delay = ktime_set(1, 0);
 	}
 
-	schedule_work(&trigger_work);
+	queue_work(queue, &trigger_work);
 
 	hrtimer_forward_now(hrtimer, ktime_add(kt_interval, delay));
 	return (autoupdate ? HRTIMER_RESTART : HRTIMER_NORESTART);
@@ -209,7 +224,7 @@ static irqreturn_t dht22_irq_handler(int irq, void *data)
 	}
 
 handle_irq:
-	schedule_work(workers[processed_irq_count % ARRAY_SIZE(workers)]);
+	queue_work(queue, workers[processed_irq_count % ARRAY_SIZE(workers)]);
 
 	return IRQ_HANDLED;
 }
@@ -308,7 +323,7 @@ static void process_results(struct work_struct *work)
 				sensor_data[2],
 				sensor_data[3],
 				sensor_data[4]);
-		schedule_work(&cleanup_work);
+		queue_work(queue, &cleanup_work);
 		return;
 	}
 
@@ -323,7 +338,7 @@ static void process_results(struct work_struct *work)
 		humidity / 10,
 		humidity % 10);
 
-	schedule_work(&cleanup_work);
+	queue_work(queue, &cleanup_work);
 }
 
 module_init(dht22_init);
