@@ -27,9 +27,6 @@
 #define TRIGGER_POST_DELAY 40
 #define PREP_SIGNAL_LEN 50
 
-#define RW_PERM 0664
-#define WO_PERM 0220
-
 static int setup_dht22_gpio(int gpio);
 static int setup_dht22_irq(int gpio);
 static void verify_timeout(void);

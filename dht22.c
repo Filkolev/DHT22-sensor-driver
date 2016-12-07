@@ -62,16 +62,12 @@ MODULE_PARM_DESC(autoupdate_timeout,
 
 static struct kobj_attribute gpio_attr = __ATTR_RO(gpio_number);
 static struct kobj_attribute autoupdate_attr =
-	__ATTR(autoupdate, RW_PERM, autoupdate_show, autoupdate_store);
+	__ATTR_RW(autoupdate);
 static struct kobj_attribute autoupdate_timeout_attr =
-	__ATTR(autoupdate_timeout_ms,
-		RW_PERM,
-		autoupdate_timeout_ms_show,
-		autoupdate_timeout_ms_store);
+	__ATTR_RW(autoupdate_timeout_ms);
 static struct kobj_attribute temperature_attr = __ATTR_RO(temperature);
 static struct kobj_attribute humidity_attr = __ATTR_RO(humidity);
-static struct kobj_attribute trigger_attr =
-	__ATTR(trigger, WO_PERM, NULL, trigger_store);
+static struct kobj_attribute trigger_attr = __ATTR_WO(trigger);
 
 static struct attribute *dht22_attrs[] = {
 	&gpio_attr.attr,
