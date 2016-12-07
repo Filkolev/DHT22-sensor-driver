@@ -466,12 +466,16 @@ trigger_store(struct kobject *kobj,
 	int trigger;
 	struct timespec64 now;
 	bool can_trigger;
-	ktime_t prev;
+	ktime_t prev, min_interval;
 
 	getnstimeofday64(&now);
 	prev = timespec64_to_ktime(ts_prev_reading);
+
+	min_interval = ktime_set(AUTOUPDATE_TIMEOUT_MIN / MSEC_PER_SEC,
+		(AUTOUPDATE_TIMEOUT_MIN % MSEC_PER_SEC) / NSEC_PER_USEC);
+
 	can_trigger = ktime_after(timespec64_to_ktime(now),
-				ktime_add(prev, kt_interval));
+				ktime_add(prev, min_interval));
 
 	sscanf(buf, "%d\n", &trigger);
 	if (trigger && can_trigger)
