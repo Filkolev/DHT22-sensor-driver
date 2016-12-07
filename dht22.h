@@ -33,7 +33,7 @@ static void verify_timeout(void);
 
 static void reset_data(void);
 static void trigger_sensor(struct work_struct *work);
-static enum hrtimer_restart timer_func(struct hrtimer *);
+static enum hrtimer_restart timer_func(struct hrtimer *hrtimer);
 
 static irqreturn_t dht22_irq_handler(int irq, void *data);
 static void sm_work_func(struct work_struct *work);

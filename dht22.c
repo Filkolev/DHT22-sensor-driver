@@ -140,9 +140,6 @@ static int __init dht22_init(void)
 	verify_timeout();
 	reset_data();
 
-	kt_interval = ktime_set(autoupdate_timeout / MSEC_PER_SEC,
-			(autoupdate_timeout % MSEC_PER_SEC) * NSEC_PER_USEC);
-
 	hrtimer_init(&timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	timer.function = timer_func;
 	hrtimer_start(&timer, ktime_set(0, 100 * NSEC_PER_USEC), HRTIMER_MODE_REL);
@@ -250,8 +247,8 @@ static void trigger_sensor(struct work_struct *work)
 {
 	/*
 	 * According to datasheet the triggering signal is as follows:
-	 * - prepare (wait some time while line is HIGH): 250 ms
-	 * - send start signal (pull line LOW): 20 ms LOW
+	 * - prepare (wait some time while line is HIGH): 100-250 ms
+	 * - send start signal (pull line LOW): at least 1 ms, 10 ms LOW
 	 * - end start signal (stop pulling LOW): 40 us HIGH
 	 */
 	sm->triggered = true;
@@ -288,6 +285,7 @@ static enum hrtimer_restart timer_func(struct hrtimer *hrtimer)
 		pr_info("Resetting. Processed IRQs: %d\n", processed_irq_count);
 		reset_data();
 		sm->reset(sm);
+
 		/*
 		 * Delay the next trigger event to prevent multple successive
 		 * errors. Doesn't seem to have a tangible positive effect...
