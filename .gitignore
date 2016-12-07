@@ -1,4 +1,5 @@
 *.o
+notes.txt
 *mod*
 *cmd
 Module.symvers
