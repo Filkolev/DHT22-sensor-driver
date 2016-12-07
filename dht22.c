@@ -61,11 +61,17 @@ MODULE_PARM_DESC(autoupdate_timeout,
 	"Interval between trigger events (default: 2s, min: 2s, max: 10 min)");
 
 static struct kobj_attribute gpio_attr = __ATTR_RO(gpio_number);
-static struct kobj_attribute autoupdate_attr = __ATTR_RW(autoupdate);
+static struct kobj_attribute autoupdate_attr =
+	__ATTR(autoupdate, RW_PERM, autoupdate_show, autoupdate_store);
 static struct kobj_attribute autoupdate_timeout_attr =
-		__ATTR_RW(autoupdate_timeout_ms);
+	__ATTR(autoupdate_timeout_ms,
+		RW_PERM,
+		autoupdate_timeout_ms_show,
+		autoupdate_timeout_ms_store);
 static struct kobj_attribute temperature_attr = __ATTR_RO(temperature);
 static struct kobj_attribute humidity_attr = __ATTR_RO(humidity);
+static struct kobj_attribute trigger_attr =
+	__ATTR(trigger, WO_PERM, NULL, trigger_store);
 
 static struct attribute *dht22_attrs[] = {
 	&gpio_attr.attr,
@@ -73,6 +79,7 @@ static struct attribute *dht22_attrs[] = {
 	&autoupdate_timeout_attr.attr,
 	&temperature_attr.attr,
 	&humidity_attr.attr,
+	&trigger_attr.attr,
 	NULL,
 };
 
@@ -456,6 +463,29 @@ humidity_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 	return sprintf(buf, "%d.%d%%\n",
 		raw_humidity / 10,
 		raw_humidity % 10);
+}
+
+static ssize_t
+trigger_store(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf,
+		size_t count)
+{
+	int trigger;
+	struct timespec64 now;
+	bool can_trigger;
+	ktime_t prev;
+
+	getnstimeofday64(&now);
+	prev = timespec64_to_ktime(ts_prev_reading);
+	can_trigger = ktime_after(timespec64_to_ktime(now),
+				ktime_add(prev, kt_interval));
+
+	sscanf(buf, "%d\n", &trigger);
+	if (trigger && can_trigger)
+		queue_work(queue, &trigger_work);
+
+	return count;
 }
 
 module_init(dht22_init);

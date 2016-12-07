@@ -25,11 +25,10 @@
 
 /* signal lengths in us */
 #define TRIGGER_POST_DELAY 40
-#define INIT_RESPONSE_LEN 80
 #define PREP_SIGNAL_LEN 50
-#define ZERO_BIT 28
-#define ONE_BIT 75
-#define TOLERANCE 15 /* Each irq delta should deviate +/- 15us at most */
+
+#define RW_PERM 0664
+#define WO_PERM 0220
 
 static int setup_dht22_gpio(int gpio);
 static int setup_dht22_irq(int gpio);
@@ -73,3 +72,9 @@ temperature_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf);
 
 static ssize_t
 humidity_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf);
+
+static ssize_t
+trigger_store(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf,
+		size_t count);
