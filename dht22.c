@@ -106,7 +106,7 @@ static int __init dht22_init(void)
 	sm = create_sm();
 	if (IS_ERR(sm)) {
 		ret = PTR_ERR(sm);
-		goto out;
+		goto sm_err;
 	}
 
 	sm->reset(sm);
@@ -154,6 +154,9 @@ irq_err:
 	gpio_free(gpio);
 gpio_err:
 	destroy_sm(sm);
+sm_err:
+	if (queue != system_highpri_wq)
+		destroy_workqueue(queue);
 out:
 	return ret;
 }
@@ -166,6 +169,8 @@ static void __exit dht22_exit(void)
 	gpio_unexport(gpio);
 	gpio_free(gpio);
 	destroy_sm(sm);
+	if (queue != system_highpri_wq)
+		destroy_workqueue(queue);
 
 	pr_info("DHT22 module unloaded\n");
 }
@@ -367,8 +372,9 @@ static void process_results(struct work_struct *work)
 				sensor_data[2],
 				sensor_data[3],
 				sensor_data[4]);
+
 		queue_work(queue, &cleanup_work);
-		/* TODO: Implement retry logic is autoupdate is false */
+		/* TODO: Implement retry logic if autoupdate is false */
 		return;
 	}
 
