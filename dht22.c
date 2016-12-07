@@ -24,6 +24,9 @@ static struct kobject *dht22_kobj;
 static int irq_deltas[EXPECTED_IRQ_COUNT];
 static int sensor_data[DATA_SIZE];
 
+static int raw_temperature = 0;
+static int raw_humidity = 0;
+
 static struct workqueue_struct *queue;
 
 static DECLARE_WORK(trigger_work, trigger_sensor);
@@ -61,11 +64,15 @@ static struct kobj_attribute gpio_attr = __ATTR_RO(gpio_number);
 static struct kobj_attribute autoupdate_attr = __ATTR_RW(autoupdate);
 static struct kobj_attribute autoupdate_timeout_attr =
 		__ATTR_RW(autoupdate_timeout_ms);
+static struct kobj_attribute temperature_attr = __ATTR_RO(temperature);
+static struct kobj_attribute humidity_attr = __ATTR_RO(humidity);
 
 static struct attribute *dht22_attrs[] = {
 	&gpio_attr.attr,
 	&autoupdate_attr.attr,
 	&autoupdate_timeout_attr.attr,
+	&temperature_attr.attr,
+	&humidity_attr.attr,
 	NULL,
 };
 
@@ -368,8 +375,12 @@ static void process_results(struct work_struct *work)
 
 	humidity = ((sensor_data[0] << BITS_PER_BYTE) | sensor_data[1]);
 	temperature = ((sensor_data[2] << BITS_PER_BYTE) | sensor_data[3]);
+
 	if (sensor_data[2] & 0x80)
 		temperature *= -1;
+
+	raw_humidity = humidity;
+	raw_temperature = temperature;
 
 	pr_info("Temperature: %d.%d C; Humidity: %d.%d%%\n",
 		temperature / 10,
@@ -428,6 +439,23 @@ autoupdate_timeout_ms_store(struct kobject *kobj,
 	verify_timeout();
 
 	return count;
+}
+
+static ssize_t
+temperature_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+{
+	return sprintf(buf,
+		"%d.%d\n",
+		raw_temperature / 10,
+		raw_temperature % 10);
+}
+
+static ssize_t
+humidity_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+{
+	return sprintf(buf, "%d.%d%%\n",
+		raw_humidity / 10,
+		raw_humidity % 10);
 }
 
 module_init(dht22_init);

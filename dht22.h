@@ -67,3 +67,9 @@ autoupdate_timeout_ms_store(struct kobject *kobj,
 			struct kobj_attribute *attr,
 			const char *buf,
 			size_t count);
+
+static ssize_t
+temperature_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf);
+
+static ssize_t
+humidity_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf);
