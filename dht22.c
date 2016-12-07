@@ -116,7 +116,7 @@ static int __init dht22_init(void)
 	goto out;
 
 irq_err:
-//	gpio_unexport(gpio);
+	gpio_unexport(gpio);
 	gpio_free(gpio);
 gpio_err:
 	destroy_sm(sm);
@@ -129,7 +129,7 @@ static void __exit dht22_exit(void)
 {
 	hrtimer_cancel(&timer);
 	free_irq(irq_number, NULL);
-//	gpio_unexport(gpio);
+	gpio_unexport(gpio);
 	gpio_free(gpio);
 	destroy_sm(sm);
 	sm = NULL;	
@@ -248,7 +248,7 @@ static int setup_dht22_gpio(int gpio)
 	}
 
 	gpio_direction_input(gpio);
-//	gpio_export(gpio, true);
+	gpio_export(gpio, true);
 
 	return ret;
 }
