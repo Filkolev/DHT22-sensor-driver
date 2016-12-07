@@ -250,7 +250,6 @@ static void trigger_sensor(struct work_struct *work)
 	 * - end start signal (stop pulling LOW): 40 us HIGH
 	 */
 	sm->triggered = true;
-	sm->state = RESPONDING;
 	getnstimeofday64(&ts_prev_reading);
 
 	mdelay(TRIGGER_DELAY);
@@ -369,6 +368,7 @@ static void process_results(struct work_struct *work)
 				sensor_data[3],
 				sensor_data[4]);
 		queue_work(queue, &cleanup_work);
+		/* TODO: Implement retry logic is autoupdate is false */
 		return;
 	}
 
