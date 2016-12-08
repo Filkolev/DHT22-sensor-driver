@@ -16,6 +16,9 @@
 #define INIT_RESPONSE_IRQ_COUNT 2
 #define DATA_IRQ_COUNT 80
 
+#define MAX_RETRY_COUNT 5
+#define RETRY_TIMEOUT 2 /* Seconds */
+
 #define LOW 0
 #define HIGH 1
 
@@ -34,10 +37,11 @@ static void verify_timeout(void);
 static void reset_data(void);
 static void trigger_sensor(struct work_struct *work);
 static enum hrtimer_restart timer_func(struct hrtimer *hrtimer);
+static enum hrtimer_restart retry_timer_func(struct hrtimer *hrtimer);
 
 static irqreturn_t dht22_irq_handler(int irq, void *data);
 static void sm_work_func(struct work_struct *work);
-static void cleanup_work_func(struct work_struct *work);
+static void cleanup_func(struct work_struct *work);
 static void process_data(void);
 static void process_results(struct work_struct *work);
 

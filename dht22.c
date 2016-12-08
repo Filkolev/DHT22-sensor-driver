@@ -17,8 +17,8 @@ static struct dht22_sm *sm;
 static struct timespec64 ts_prev_gpio_switch, ts_prev_reading;
 static int irq_number;
 static int processed_irq_count = 0;
-static ktime_t kt_interval;
-static struct hrtimer timer;
+static ktime_t kt_interval, kt_retry_interval;
+static struct hrtimer timer, retry_timer;
 static struct kobject *dht22_kobj;
 
 static int irq_deltas[EXPECTED_IRQ_COUNT];
@@ -26,12 +26,14 @@ static int sensor_data[DATA_SIZE];
 
 static int raw_temperature = 0;
 static int raw_humidity = 0;
+static int retry_count = 0;
+static bool retry = false;
 
 static struct workqueue_struct *queue;
 
 static DECLARE_WORK(trigger_work, trigger_sensor);
 static DECLARE_WORK(work, process_results);
-static DECLARE_WORK(cleanup_work, cleanup_work_func);
+static DECLARE_WORK(cleanup_work, cleanup_func);
 static DECLARE_WORK(sm_work_0, sm_work_func);
 static DECLARE_WORK(sm_work_1, sm_work_func);
 static DECLARE_WORK(sm_work_2, sm_work_func);
@@ -140,6 +142,11 @@ static int __init dht22_init(void)
 	verify_timeout();
 	reset_data();
 
+	kt_retry_interval = ktime_set(RETRY_TIMEOUT, 0);
+	hrtimer_init(&retry_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	retry_timer.function = retry_timer_func;
+	hrtimer_start(&retry_timer, kt_retry_interval, HRTIMER_MODE_REL);
+
 	hrtimer_init(&timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	timer.function = timer_func;
 	hrtimer_start(&timer, ktime_set(0, 100 * NSEC_PER_USEC), HRTIMER_MODE_REL);
@@ -164,6 +171,7 @@ out:
 static void __exit dht22_exit(void)
 {
 	hrtimer_cancel(&timer);
+	hrtimer_cancel(&retry_timer);
 	kobject_put(dht22_kobj);
 	free_irq(irq_number, NULL);
 	gpio_unexport(gpio);
@@ -264,6 +272,12 @@ static void trigger_sensor(struct work_struct *work)
 
 	gpio_direction_input(gpio);
 	udelay(TRIGGER_POST_DELAY);
+
+	if (!autoupdate && !hrtimer_active(&retry_timer)) {
+		retry = true;
+		hrtimer_forward_now(&retry_timer, kt_retry_interval);
+		hrtimer_restart(&retry_timer);
+	}
 }
 
 static enum hrtimer_restart timer_func(struct hrtimer *hrtimer)
@@ -282,9 +296,13 @@ static enum hrtimer_restart timer_func(struct hrtimer *hrtimer)
 
 	kt_interval = ktime_set(autoupdate_timeout / MSEC_PER_SEC,
 			(autoupdate_timeout % MSEC_PER_SEC) * NSEC_PER_USEC);
+
 	delay = ktime_set(0, 0);
 	if (processed_irq_count) {
-		pr_info("Resetting. Processed IRQs: %d\n", processed_irq_count);
+		pr_err("Resetting. Processed %d IRQs (expected %d)\n",
+			processed_irq_count,
+			EXPECTED_IRQ_COUNT);
+
 		reset_data();
 		sm->reset(sm);
 
@@ -298,7 +316,28 @@ static enum hrtimer_restart timer_func(struct hrtimer *hrtimer)
 	queue_work(queue, &trigger_work);
 
 	hrtimer_forward_now(hrtimer, ktime_add(kt_interval, delay));
+
 	return (autoupdate ? HRTIMER_RESTART : HRTIMER_NORESTART);
+}
+
+static enum hrtimer_restart retry_timer_func(struct hrtimer *hrtimer)
+{
+	if (!autoupdate && retry && retry_count < MAX_RETRY_COUNT) {
+		retry_count++;
+		pr_err("Failed to read sensor. Retrying (attempt %d of %d)\n",
+			retry_count,
+			MAX_RETRY_COUNT);
+
+		cleanup_func(NULL);
+		queue_work(queue, &trigger_work);
+	} else if (retry_count) {
+		retry_count = 0;
+		retry = false;
+	}
+
+	hrtimer_forward_now(&retry_timer, kt_retry_interval);
+
+	return retry ? HRTIMER_RESTART : HRTIMER_NORESTART;
 }
 
 static irqreturn_t dht22_irq_handler(int irq, void *data)
@@ -317,9 +356,8 @@ static irqreturn_t dht22_irq_handler(int irq, void *data)
 	processed_irq_count++;
 	ts_prev_gpio_switch = ts_current_irq;
 
-	if (processed_irq_count == EXPECTED_IRQ_COUNT) {
+	if (processed_irq_count == EXPECTED_IRQ_COUNT)
 		sm->finished = true;
-	}
 
 handle_irq:
 	queue_work(queue, workers[processed_irq_count % ARRAY_SIZE(workers)]);
@@ -333,7 +371,7 @@ static void sm_work_func(struct work_struct *work)
 	sm->handle_state(sm);
 }
 
-static void cleanup_work_func(struct work_struct *work)
+static void cleanup_func(struct work_struct *work)
 {
 	reset_data();
 	sm->reset(sm);
@@ -366,15 +404,14 @@ static void process_results(struct work_struct *work)
 	hash = sensor_data[0] + sensor_data[1] + sensor_data[2] + sensor_data[3];
 	hash &= 0xFF;
 	if (hash != sensor_data[4]) {
-		pr_err("Hash mismatch. Stopping. (%d, %d, %d, %d, %d)\n",
+		pr_err("Hash mismatch (%d, %d, %d, %d, %d)\n",
 				sensor_data[0],
 				sensor_data[1],
 				sensor_data[2],
 				sensor_data[3],
 				sensor_data[4]);
 
-		queue_work(queue, &cleanup_work);
-		/* TODO: Implement retry logic if autoupdate is false */
+		cleanup_func(NULL);
 		return;
 	}
 
@@ -393,7 +430,8 @@ static void process_results(struct work_struct *work)
 		humidity / 10,
 		humidity % 10);
 
-	queue_work(queue, &cleanup_work);
+	retry = false;
+	cleanup_func(NULL);
 }
 
 static ssize_t
