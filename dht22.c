@@ -144,7 +144,9 @@ static int __init dht22_init(void)
 
 	hrtimer_init(&timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	timer.function = timer_func;
-	hrtimer_start(&timer, ktime_set(0, 100 * NSEC_PER_USEC), HRTIMER_MODE_REL);
+	hrtimer_start(&timer,
+			ktime_set(0, 100 * NSEC_PER_USEC),
+			HRTIMER_MODE_REL);
 
 	pr_info("DHT22 module finished loading.\n");
 	goto out;
@@ -348,7 +350,9 @@ static irqreturn_t dht22_irq_handler(int irq, void *data)
 	getnstimeofday64(&ts_current_irq);
 	ts_diff = timespec64_sub(ts_current_irq, ts_prev_gpio_switch);
 
-	irq_deltas[processed_irq_count] = (int)(ts_diff.tv_nsec / NSEC_PER_USEC);
+	irq_deltas[processed_irq_count] =
+		(int)(ts_diff.tv_nsec / NSEC_PER_USEC);
+
 	processed_irq_count++;
 	ts_prev_gpio_switch = ts_current_irq;
 
@@ -386,7 +390,7 @@ static void process_data(void)
 	for (i = start_idx; i < start_idx + DATA_IRQ_COUNT ; i += 2) {
 		bit_value = irq_deltas[i + 1] < PREP_SIGNAL_LEN ? 0 : 1;
 		current_byte = (i - start_idx) / (BITS_PER_BYTE << 1);
-		current_bit = 7 - (((i - start_idx) % (BITS_PER_BYTE << 1)) >> 1);
+		current_bit = 7 - (((i - start_idx) % (BITS_PER_BYTE * 2)) / 2);
 		sensor_data[current_byte] |= bit_value << current_bit;
 	}
 }
@@ -397,8 +401,12 @@ static void process_results(struct work_struct *work)
 
 	process_data();
 
-	hash = sensor_data[0] + sensor_data[1] + sensor_data[2] + sensor_data[3];
+	hash = sensor_data[0] +
+		sensor_data[1] +
+		sensor_data[2] +
+		sensor_data[3];
 	hash &= 0xFF;
+
 	if (hash != sensor_data[4]) {
 		pr_err("Hash mismatch (%d, %d, %d, %d, %d)\n",
 				sensor_data[0],
