@@ -177,6 +177,7 @@ static void __exit dht22_exit(void)
 	gpio_unexport(gpio);
 	gpio_free(gpio);
 	destroy_sm(sm);
+	flush_workqueue(queue); /* Maybe a bad idea if using system queue */
 	if (queue != system_highpri_wq)
 		destroy_workqueue(queue);
 
