@@ -3,7 +3,11 @@
 #include <linux/err.h>
 #include <linux/slab.h>
 
-struct dht22_sm * create_sm(void);
+struct dht22_sm *
+create_sm(struct work_struct *work,
+	struct work_struct *cleanup_work,
+	struct workqueue_struct *wq);
+
 void destroy_sm(struct dht22_sm *sm);
 
 enum dht22_state {
@@ -26,5 +30,5 @@ struct dht22_sm {
 	struct mutex lock;
 	struct work_struct *work;
 	struct work_struct *cleanup_work;
-	struct workqueue_struct *queue;
+	struct workqueue_struct *wq;
 };

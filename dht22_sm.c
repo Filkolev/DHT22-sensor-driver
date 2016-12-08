@@ -31,7 +31,10 @@ static void (*handler_functions[COUNT_STATES])(struct dht22_sm *sm) = {
 
 static void noop(struct dht22_sm *sm) { }
 
-struct dht22_sm *create_sm(void)
+struct dht22_sm *
+create_sm(struct work_struct *work,
+	struct work_struct *cleanup_work,
+	struct workqueue_struct *wq)
 {
 	struct dht22_sm *sm;
 	struct mutex lock;
@@ -48,6 +51,10 @@ struct dht22_sm *create_sm(void)
 	sm->reset = reset_dht22_sm;
 	sm->change_state = change_dht22_sm_state;
 	sm->handle_state = handle_dht22_state;
+	sm->work = work;
+	sm->cleanup_work = cleanup_work;
+	sm->wq = wq;
+	sm->reset(sm);
 
 	return sm;
 }
@@ -96,12 +103,12 @@ static enum dht22_state get_next_state_error(struct dht22_sm *sm)
 static void handle_idle(struct dht22_sm *sm)
 {
 	if (sm->dirty)
-		queue_work(sm->queue, sm->cleanup_work);
+		queue_work(sm->wq, sm->cleanup_work);
 }
 
 static void handle_finished(struct dht22_sm *sm)
 {
-	queue_work(sm->queue, sm->work);
+	queue_work(sm->wq, sm->work);
 }
 
 static void change_dht22_sm_state(struct dht22_sm *sm)

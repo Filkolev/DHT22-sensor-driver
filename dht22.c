@@ -105,16 +105,11 @@ static int __init dht22_init(void)
 	if (!queue)
 		queue = system_highpri_wq;
 
-	sm = create_sm();
+	sm = create_sm(&work, &cleanup_work, queue);
 	if (IS_ERR(sm)) {
 		ret = PTR_ERR(sm);
 		goto sm_err;
 	}
-
-	sm->reset(sm);
-	sm->work = &work;
-	sm->cleanup_work = &cleanup_work;
-	sm->queue = queue;
 
 	ret = setup_dht22_gpio(gpio);
 	if (ret)
