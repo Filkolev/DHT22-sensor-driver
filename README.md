@@ -9,7 +9,7 @@ This driver is compiled and tested on Raspberry Pi 3 Model B running Raspbian
 (Linux raspberrypi 4.4.34-v7+ #930). The sensor is connected to the Pi via a
 breadboard.
 
-This driver uses the Linux kernel gpio API to trigger the sensor, and processes
+This driver uses the Linux kernel GPIO API to trigger the sensor, and processes
 the data received by calculating the time intervals between interrupts (a
 transition from HIGH to LOW or from LOW to HIGH state).
 
@@ -23,8 +23,8 @@ sufficient time for the sensor to start up before sending the actual triggering
 signal. In this driver, the interval is set to 100 ms; in popular libraries it
 is about 250 ms.
  2. Pull the line LOW for at least 1 ms. In this driver, the triggering signal
-is set to 10 ms (the **dht22.h** file contains a #define macro, refer to it as some
-adjustments may be made). In other libraries, 20 ms is a popular choice.
+is set to 10 ms (the **dht22.h** file contains a #define macro, refer to it as
+some adjustments may be made). In other libraries, 20 ms is a popular choice.
  3. Stop pulling LOW, allowing the line to return to HIGH and wait between 20
 and 40 us. This driver waits 40 us.
 
@@ -68,11 +68,12 @@ loaded in the kernel with the following command (as root):
 `insmod dht22_driver.ko [gpio=<gpio>] [autoupdate=<true,false>] [autoupdate_timeout=<timeout>]`
 
 The `gpio` parameter determines on which gpio the sensor is connected (per the
-BCM scheme). It defaults to 6.
+[BCM scheme](https://pinout.xyz/#)). It defaults to 6.
 
 The `autoupdate` parameter determines whether the sensor will be automatically
 re-triggered at a predefined interval (2 seconds minimum, which is also the
-default). Note that the sensor is triggered at least once (on module load).
+default). Anything different from '0' is interpreted as `true`. Note that the
+sensor is triggered at least once (on module load).
 
 The `autoupdate_timeout` parameter can be used to modify the default timeout,
 minimum is 2 seconds, maximum is 10 minutes. Values are in milliseconds. This
@@ -84,7 +85,7 @@ The driver can be recompiled using `make`.
 
 ### Sysfs Attributes
 
-When loaded, the driver creates a directory in _/sys/kernel/_' called 'dht22'.
+When loaded, the driver creates a directory in _/sys/kernel/_ called 'dht22'.
 It contains one attribute group (sub-folder), also called 'dht22'. The following
 attributes are exported:
 * **temperature** (read-only) - shows the most recent temperature reading, e.g.
@@ -112,13 +113,17 @@ by the kernel, not by the driver.
 The driver makes use of the kernel's GPIO API in order to use the sensor.
 First, the provided GPIO is checked for validity with a call to
 `gpio_is_valid()`.
+
 When this succeeds, the GPIO is requested with `gpio_request()`.
+
 Direction is changed when needed with `gpio_direction_input()` and
 `gpio_direction_output()`. Initially, it is set in input mode (also necessary
 in order to setup the IRQ). When triggerring, direction is changed to output
 and afterwards returned to input.
+
 The GPIO is exported to sysfs via `gpio_export()`; this creates the directory
-_/sys/class/gpio/gpio<num>/_.
+_/sys/class/gpio/gpioNum/_.
+
 On error and module unload time cleanup is performed via `gpio_unexport()` and
 `gpio_free()`.
 
@@ -132,7 +137,7 @@ to know when the level changes (either from LOW to HIGH or vice versa).
 An interrupt handler is installed which calculates the time passed from the
 previous interrupt and stores the result (in microseconds) to a static array;
 then, a work is queued to change and handle the state machine's state (more on
-the FSM below).
+the FSM [below](#fsm)).
 
 Cleanup is performed via `free_irq()`.
 
@@ -189,4 +194,4 @@ calculating the time passed since the previous IRQ (storing the result in a
 static array), raising `finished` or `error` flags in the state machine, and
 queueing the FSM state transition and handling in a dedicated workqueue.
 Because of the small amount of time between IRQs, an array of 5 `struct
-work\_struct` objects is used, each object used in turn.
+work_struct` objects is used, each object used in turn.
