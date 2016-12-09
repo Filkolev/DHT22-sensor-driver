@@ -23,7 +23,7 @@ sufficient time for the sensor to start up before sending the actual triggering
 signal. In this driver, the interval is set to 100 ms; in popular libraries it
 is about 250 ms.
  2. Pull the line LOW for at least 1 ms. In this driver, the triggering signal
-is set to 10 ms (the dht22.h file contains a #define macro, refer to it as some
+is set to 10 ms (the **dht22.h** file contains a #define macro, refer to it as some
 adjustments may be made). In other libraries, 20 ms is a popular choice.
  3. Stop pulling LOW, allowing the line to return to HIGH and wait between 20
 and 40 us. This driver waits 40 us.
@@ -84,24 +84,24 @@ The driver can be recompiled using `make`.
 
 ### Sysfs Attributes
 
-When loaded, the driver creates a directory in '/sys/kernel/' called 'dht22'.
+When loaded, the driver creates a directory in _/sys/kernel/_' called 'dht22'.
 It contains one attribute group (sub-folder), also called 'dht22'. The following
 attributes are exported:
-* temperature (read-only) - shows the most recent temperature reading, e.g.
+* **temperature** (read-only) - shows the most recent temperature reading, e.g.
 '16.5'
-* humidity (read-only) - shows the most recent humidity reading in percent, e.g.
-'14.2%'
-* gpio (read-only) - shows the gpio on which the sensor is connected. This is
-read-only since changing the circuit while the Raspberry is on is highly
+* **humidity** (read-only) - shows the most recent humidity reading in percent,
+e.g. '14.2%'
+* **gpio** (read-only) - shows the gpio on which the sensor is connected. This
+is read-only since changing the circuit while the Raspberry is on is highly
 discouraged. The gpio can only be set on module load time.
-* autoupdate (read-write) - shows or changes the autoupdate setting. Writing
+* **autoupdate** (read-write) - shows or changes the autoupdate setting. Writing
 anything other than 0 is interpreted as `true`.
-* autoupdate\_timeout\_ms (read-write) - shows or changes the interval between
-triggering events. It only has effect if `autoupdate` is set to `true`.
-* trigger (write-only) - writing anything other than 0 to this file will cause
-a triggering event if `autoupdate` is set to `false`.
+* **autoupdate\_timeout\_ms** (read-write) - shows or changes the interval
+between triggering events. It only has effect if `autoupdate` is set to `true`.
+* **trigger** (write-only) - writing anything other than 0 to this file will
+cause a triggering event if `autoupdate` is set to `false`.
 
-Note that writing to files in '/sys/kernel/' is forbidden for group 'other',
+Note that writing to files in _/sys/kernel/_ is forbidden for group 'other',
 therefore any writes should be performed with root permissions. This is enforced
 by the kernel, not by the driver.
 
@@ -118,7 +118,7 @@ Direction is changed when needed with `gpio_direction_input()` and
 in order to setup the IRQ). When triggerring, direction is changed to output
 and afterwards returned to input.
 The GPIO is exported to sysfs via `gpio_export()`; this creates the directory
-'/sys/class/gpio/gpio<num>/'.
+_/sys/class/gpio/gpio<num>/_.
 On error and module unload time cleanup is performed via `gpio_unexport()` and
 `gpio_free()`.
 
@@ -142,7 +142,7 @@ Two functions are used in order to export the necessary sysfs attributes
 described above in the section [Sysfs Attributes](#sysfs-attributes).
 
 `kobject_create_and_add()` creates a kobject with the kernel kobject as parent;
-this puts the sysfs directory for the driver in '/sys/kernel/'.
+this puts the sysfs directory for the driver in _/sys/kernel/_.
 
 `sysfs_create_group()` does the rest using previously defined attributes with
 load and/or store handlers for each attribute (file).
@@ -179,7 +179,8 @@ State transitions and handling happen in the bottom half since function call
 overhead causes significant delay in the IRQ handler (which is unacceptable
 given the strict time constraints when working with the DHT22 sensor).
 
-All FSM-related definitions are separated in 'dht22\_sm.h' and 'dht22\_sm.c'.
+All FSM-related definitions are separated in **dht22\_sm.h** and
+**dht22\_sm.c**.
 
 ### Interrupt Handling
 
@@ -187,5 +188,5 @@ The interrupt handling routine is only responsible for acknowledging the IRQ,
 calculating the time passed since the previous IRQ (storing the result in a
 static array), raising `finished` or `error` flags in the state machine, and
 queueing the FSM state transition and handling in a dedicated workqueue.
-Because of the small amount of time between IRQs, an array of 5 struct
-work\_struct objects is used, each object used in turn.
+Because of the small amount of time between IRQs, an array of 5 `struct
+work\_struct` objects is used, each object used in turn.
