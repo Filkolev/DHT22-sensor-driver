@@ -117,14 +117,13 @@ static int __init dht22_init(void)
 
 	getnstimeofday64(&ts_prev_gpio_switch);
 	ret = setup_dht22_irq(gpio);
-
 	if (ret)
 		goto irq_err;
 
 	dht22_kobj = kobject_create_and_add("dht22", kernel_kobj);
 	if (!dht22_kobj) {
 		pr_err("Failed to create kobject mapping.\n");
-		ret = -ENOMEM;
+		ret = -EINVAL;
 		goto irq_err;
 	}
 
@@ -301,8 +300,7 @@ static enum hrtimer_restart timer_func(struct hrtimer *hrtimer)
 			processed_irq_count,
 			EXPECTED_IRQ_COUNT);
 
-		reset_data();
-		sm->reset(sm);
+		cleanup_func(NULL);
 
 		/*
 		 * Delay the next trigger event to prevent multple successive
@@ -312,7 +310,6 @@ static enum hrtimer_restart timer_func(struct hrtimer *hrtimer)
 	}
 
 	queue_work(queue, &trigger_work);
-
 	hrtimer_forward_now(hrtimer, ktime_add(kt_interval, delay));
 
 	return (autoupdate ? HRTIMER_RESTART : HRTIMER_NORESTART);
@@ -335,7 +332,7 @@ static enum hrtimer_restart retry_timer_func(struct hrtimer *hrtimer)
 
 	hrtimer_forward_now(&retry_timer, kt_retry_interval);
 
-	return retry ? HRTIMER_RESTART : HRTIMER_NORESTART;
+	return (retry ? HRTIMER_RESTART : HRTIMER_NORESTART);
 }
 
 static irqreturn_t dht22_irq_handler(int irq, void *data)
@@ -387,9 +384,9 @@ static void process_data(void)
 	 * Most significant bits arrive first.
 	 */
 	start_idx = TRIGGER_IRQ_COUNT + INIT_RESPONSE_IRQ_COUNT;
-	for (i = start_idx; i < start_idx + DATA_IRQ_COUNT ; i += 2) {
-		bit_value = irq_deltas[i + 1] < PREP_SIGNAL_LEN ? 0 : 1;
-		current_byte = (i - start_idx) / (BITS_PER_BYTE << 1);
+	for (i = start_idx; i < start_idx + DATA_IRQ_COUNT; i += 2) {
+		bit_value = irq_deltas[i + 1] > PREP_SIGNAL_LEN;
+		current_byte = (i - start_idx) / (BITS_PER_BYTE * 2);
 		current_bit = 7 - (((i - start_idx) % (BITS_PER_BYTE * 2)) / 2);
 		sensor_data[current_byte] |= bit_value << current_bit;
 	}
