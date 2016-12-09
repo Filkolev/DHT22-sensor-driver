@@ -1,3 +1,8 @@
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/err.h>
+#include <linux/slab.h>
+
 #include "dht22_sm.h"
 
 static void reset_dht22_sm(struct dht22_sm *sm);
@@ -37,16 +42,12 @@ create_sm(struct work_struct *work,
 	struct workqueue_struct *wq)
 {
 	struct dht22_sm *sm;
-	struct mutex lock;
 
 	sm = kmalloc(sizeof(struct dht22_sm), GFP_KERNEL);
 	if (!sm) {
 		pr_err("Could not create state machine. Exiting...\n");
 		return ERR_PTR(-ENOMEM);
 	}
-
-	mutex_init(&lock);
-	sm->lock = lock;
 
 	sm->reset = reset_dht22_sm;
 	sm->change_state = change_dht22_sm_state;
@@ -61,7 +62,6 @@ create_sm(struct work_struct *work,
 
 void destroy_sm(struct dht22_sm *sm)
 {
-	mutex_destroy(&sm->lock);
 	kfree(sm);
 }
 
