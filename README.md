@@ -18,14 +18,14 @@ transition from HIGH to LOW or from LOW to HIGH state).
 ### Triggering The Sensor
 
 The DHT22 must be manually triggered with a specific signal as follows:
-1. Line is initially kept HIGH (it is active when it is LOW). We must allow
+ 1. Line is initially kept HIGH (it is active when it is LOW). We must allow
 sufficient time for the sensor to start up before sending the actual triggering
 signal. In this driver, the interval is set to 100 ms; in popular libraries it
 is about 250 ms.
-2. Pull the line LOW for at least 1 ms. In this driver, the triggering signal
+ 2. Pull the line LOW for at least 1 ms. In this driver, the triggering signal
 is set to 10 ms (the dht22.h file contains a #define macro, refer to it as some
 adjustments may be made). In other libraries, 20 ms is a popular choice.
-3. Stop pulling LOW, allowing the line to return to HIGH and wait between 20 and
+ 3. Stop pulling LOW, allowing the line to return to HIGH and wait between 20 and
 40 us. This driver waits 40 us.
 
 The DHT22 sensor is relatively slow and can be read once every two seconds at
