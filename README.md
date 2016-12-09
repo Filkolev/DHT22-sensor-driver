@@ -25,8 +25,8 @@ is about 250 ms.
  2. Pull the line LOW for at least 1 ms. In this driver, the triggering signal
 is set to 10 ms (the dht22.h file contains a #define macro, refer to it as some
 adjustments may be made). In other libraries, 20 ms is a popular choice.
- 3. Stop pulling LOW, allowing the line to return to HIGH and wait between 20 and
-40 us. This driver waits 40 us.
+ 3. Stop pulling LOW, allowing the line to return to HIGH and wait between 20
+and 40 us. This driver waits 40 us.
 
 The DHT22 sensor is relatively slow and can be read once every two seconds at
 most.
@@ -64,13 +64,16 @@ Celsius will be represented as the number 252, or in binary: 00000000 011111100.
 
 The git repository contains the compiled .ko file which can be dynamically
 loaded in the kernel with the following command (as root):
+
 `insmod dht22_driver.ko [gpio=<gpio>] [autoupdate=<true,false>] [autoupdate_timeout=<timeout>]`
 
 The `gpio` parameter determines on which gpio the sensor is connected (per the
 BCM scheme). It defaults to 6.
+
 The `autoupdate` parameter determines whether the sensor will be automatically
 re-triggered at a predefined interval (2 seconds minimum, which is also the
 default). Note that the sensor is triggered at least once (on module load).
+
 The `autoupdate_timeout` parameter can be used to modify the default timeout,
 minimum is 2 seconds, maximum is 10 minutes. Values are in milliseconds. This
 only has effect if `autoupdate` is `true`.
@@ -125,30 +128,38 @@ In order to read data from the sensor, the driver processes interrupts from the
 specified GPIO. First, the IRQ number is obtained via `gpio_to_irq()`, then
 it is requested by `request_irq()`. Here, it is specified that the driver needs
 to know when the level changes (either from LOW to HIGH or vice versa).
+
 An interrupt handler is installed which calculates the time passed from the
 previous interrupt and stores the result (in microseconds) to a static array;
 then, a work is queued to change and handle the state machine's state (more on
 the FSM below).
+
 Cleanup is performed via `free_irq()`.
 
 ### Sysfs Attributes Creation
 
 Two functions are used in order to export the necessary sysfs attributes
-described above in the section 'Sysfs Attributes'.
+described above in the section [Sysfs Attributes](#sysfs-attributes).
+
 `kobject_create_and_add()` creates a kobject with the kernel kobject as parent;
 this puts the sysfs directory for the driver in '/sys/kernel/'.
+
 `sysfs_create_group()` does the rest using previously defined attributes with
 load and/or store handlers for each attribute (file).
+
 Cleanup is performed via `kobject_put()`.
 
 ### High-resolution Timers
 
-Two timers are used by the driver. The first is responsible for triggering the
+Two timers are used by the driver.
+
+The first is responsible for triggering the
 sensor repeatedly when `autoupdate` is `true`. It expires every
 `autoupdate_interval` milliseconds and runs a handler which triggers the sensor.
 It checks each time whether `autoupdate` is still `true` and recalculates the
 next expiration using `autoupdate_interval` since both values can be modified
 dynamically (via sysfs as described eariler).
+
 The second timer only runs if `autoupdate` is `false` and the previous sensor
 reading failed. It re-triggers the sensor (up to 5 times) in order to obtain
 a valid reading.
@@ -157,14 +168,17 @@ a valid reading.
 
 A finite state machine is implemented to keep track of the current state. It can
 be in one of the following states: IDLE, RESPONDING, FINISHED, ERROR.
+
 Each state has an associated `get_next_state()` and `handle_state()` function.
 Several flags are used to determine the course of action; these flags are set
 primarily by the interrupt handling routine, e.g. when the expected 86 irqs are
 handled, the `finished` flag is set, causing the machine to transition from
 RESPONDING to FINISHED.
+
 State transitions and handling happen in the bottom half since function call
 overhead causes significant delay in the IRQ handler (which is unacceptable
 given the strict time constraints when working with the DHT22 sensor).
+
 All FSM-related definitions are separated in 'dht22\_sm.h' and 'dht22\_sm.c'.
 
 ### Interrupt Handling
