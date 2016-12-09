@@ -3,7 +3,8 @@
 The DHT22 is a basic temperature and humidity sensor. Learn more from the links
 below:
 * Sensor overview from [Adafruit](https://learn.adafruit.com/dht/overview)
-* Datasheet for [DHT22](https://www.sparkfun.com/datasheets/Sensors/Temperature/DHT22.pdf)
+* Datasheet for
+[DHT22](https://www.sparkfun.com/datasheets/Sensors/Temperature/DHT22.pdf)
 
 This driver is compiled and tested on Raspberry Pi 3 Model B running Raspbian
 (Linux raspberrypi 4.4.34-v7+ #930). The sensor is connected to the Pi via a
@@ -65,7 +66,8 @@ Celsius will be represented as the number 252, or in binary: 00000000 011111100.
 The git repository contains the compiled .ko file which can be dynamically
 loaded in the kernel with the following command (as root):
 
-`insmod dht22_driver.ko [gpio=<gpio>] [autoupdate=<true,false>] [autoupdate_timeout=<timeout>]`
+`insmod dht22_driver.ko [gpio=<gpio>] [autoupdate=<true,false>]
+[autoupdate_timeout=<timeout>]`
 
 The `gpio` parameter determines on which gpio the sensor is connected (per the
 [BCM scheme](https://pinout.xyz/#)). It defaults to 6.
@@ -92,7 +94,7 @@ attributes are exported:
 '16.5'
 * **humidity** (read-only) - shows the most recent humidity reading in percent,
 e.g. '14.2%'
-* **gpio** (read-only) - shows the gpio on which the sensor is connected. This
+* **gpio_number** (read-only) - shows the gpio on which the sensor is connected. This
 is read-only since changing the circuit while the Raspberry is on is highly
 discouraged. The gpio can only be set on module load time.
 * **autoupdate** (read-write) - shows or changes the autoupdate setting. Writing
