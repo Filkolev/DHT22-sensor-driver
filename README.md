@@ -195,6 +195,4 @@ All FSM-related definitions are separated in **dht22\_sm.h** and
 The interrupt handling routine is only responsible for acknowledging the IRQ,
 calculating the time passed since the previous IRQ (storing the result in a
 static array), raising `finished` or `error` flags in the state machine, and
-queueing the FSM state transition and handling in a dedicated workqueue.
-Because of the small amount of time between IRQs, an array of 5 `struct
-work_struct` objects is used, each object used in turn.
+queueing the FSM state transition and handling.
