@@ -35,12 +35,14 @@ static int setup_dht22_irq(int gpio);
 static void verify_timeout(void);
 
 static void reset_data(void);
+static void setup_dht22_timer(struct hrtimer *hres_timer,
+			ktime_t delay,
+			enum hrtimer_restart (*func)(struct hrtimer *hrtimer));
 static void trigger_sensor(struct work_struct *work);
 static enum hrtimer_restart timer_func(struct hrtimer *hrtimer);
 static enum hrtimer_restart retry_timer_func(struct hrtimer *hrtimer);
 
 static irqreturn_t dht22_irq_handler(int irq, void *data);
-static void sm_work_func(struct work_struct *work);
 static void cleanup_func(struct work_struct *work);
 static void process_data(void);
 static void process_results(struct work_struct *work);

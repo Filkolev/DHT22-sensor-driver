@@ -29,24 +29,9 @@ static int raw_humidity = 0;
 static int retry_count = 0;
 static bool retry = false;
 
-static struct workqueue_struct *queue;
-
 static DECLARE_WORK(trigger_work, trigger_sensor);
 static DECLARE_WORK(work, process_results);
 static DECLARE_WORK(cleanup_work, cleanup_func);
-static DECLARE_WORK(sm_work_0, sm_work_func);
-static DECLARE_WORK(sm_work_1, sm_work_func);
-static DECLARE_WORK(sm_work_2, sm_work_func);
-static DECLARE_WORK(sm_work_3, sm_work_func);
-static DECLARE_WORK(sm_work_4, sm_work_func);
-
-static struct work_struct *workers[] = {
-	&sm_work_0,
-	&sm_work_1,
-	&sm_work_2,
-	&sm_work_3,
-	&sm_work_4
-};
 
 static int gpio = GPIO_DEFAULT;
 module_param(gpio, int, S_IRUGO);
@@ -93,22 +78,10 @@ static int __init dht22_init(void)
 	pr_info("DHT22 module loading...\n");
 	ret = 0;
 
-	/*
-	 * Create a workqueue with high priority which can only run one
-	 * work item at a time. The strict execution ordering is mandated
-	 * by the need to ensure the state machine processes its state
-	 * properly.
-	 * In case we fail to allocate the workqueue, we fall back to the
-	 * system high-prio workqueue.
-	 */
-	queue = alloc_workqueue("dht22_queue", WQ_HIGHPRI, 1);
-	if (!queue)
-		queue = system_highpri_wq;
-
-	sm = create_sm(&work, &cleanup_work, queue);
+	sm = create_sm(&work, &cleanup_work, system_highpri_wq);
 	if (IS_ERR(sm)) {
 		ret = PTR_ERR(sm);
-		goto sm_err;
+		goto out;
 	}
 
 	ret = setup_dht22_gpio(gpio);
@@ -137,15 +110,8 @@ static int __init dht22_init(void)
 	reset_data();
 
 	kt_retry_interval = ktime_set(RETRY_TIMEOUT, 0);
-	hrtimer_init(&retry_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	retry_timer.function = retry_timer_func;
-	hrtimer_start(&retry_timer, kt_retry_interval, HRTIMER_MODE_REL);
-
-	hrtimer_init(&timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	timer.function = timer_func;
-	hrtimer_start(&timer,
-			ktime_set(0, 100 * NSEC_PER_USEC),
-			HRTIMER_MODE_REL);
+	setup_dht22_timer(&retry_timer, kt_retry_interval, retry_timer_func);
+	setup_dht22_timer(&timer, ktime_set(0, 100 * NSEC_PER_USEC), timer_func);
 
 	pr_info("DHT22 module finished loading.\n");
 	goto out;
@@ -157,9 +123,6 @@ irq_err:
 	gpio_free(gpio);
 gpio_err:
 	destroy_sm(sm);
-sm_err:
-	if (queue != system_highpri_wq)
-		destroy_workqueue(queue);
 out:
 	return ret;
 }
@@ -168,14 +131,14 @@ static void __exit dht22_exit(void)
 {
 	hrtimer_cancel(&timer);
 	hrtimer_cancel(&retry_timer);
+	cancel_work_sync(&trigger_work);
+	cancel_work_sync(&work);
+	cancel_work_sync(&cleanup_work);
 	kobject_put(dht22_kobj);
 	free_irq(irq_number, NULL);
 	gpio_unexport(gpio);
 	gpio_free(gpio);
 	destroy_sm(sm);
-	flush_workqueue(queue); /* Maybe a bad idea if using system queue */
-	if (queue != system_highpri_wq)
-		destroy_workqueue(queue);
 
 	pr_info("DHT22 module unloaded\n");
 }
@@ -251,6 +214,15 @@ static void reset_data(void)
 	processed_irq_count = 0;
 }
 
+static void setup_dht22_timer(struct hrtimer *hres_timer,
+			ktime_t delay,
+			enum hrtimer_restart (*func)(struct hrtimer *hrtimer))
+{
+	hrtimer_init(hres_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	hres_timer->function = func;
+	hrtimer_start(hres_timer, delay, HRTIMER_MODE_REL);
+}
+
 static void trigger_sensor(struct work_struct *work)
 {
 	/*
@@ -260,6 +232,7 @@ static void trigger_sensor(struct work_struct *work)
 	 * - end start signal (stop pulling LOW): 40 us HIGH
 	 */
 	sm->triggered = true;
+	sm->change_state(sm);
 	getnstimeofday64(&ts_prev_reading);
 
 	mdelay(TRIGGER_DELAY);
@@ -309,7 +282,7 @@ static enum hrtimer_restart timer_func(struct hrtimer *hrtimer)
 		delay = ktime_set(1, 0);
 	}
 
-	queue_work(queue, &trigger_work);
+	queue_work(system_highpri_wq, &trigger_work);
 	hrtimer_forward_now(hrtimer, ktime_add(kt_interval, delay));
 
 	return (autoupdate ? HRTIMER_RESTART : HRTIMER_NORESTART);
@@ -324,7 +297,7 @@ static enum hrtimer_restart retry_timer_func(struct hrtimer *hrtimer)
 			MAX_RETRY_COUNT);
 
 		cleanup_func(NULL);
-		queue_work(queue, &trigger_work);
+		queue_work(system_highpri_wq, &trigger_work);
 	} else if (retry_count) {
 		retry_count = 0;
 		retry = false;
@@ -341,7 +314,9 @@ static irqreturn_t dht22_irq_handler(int irq, void *data)
 
 	if (!sm->triggered || processed_irq_count >= EXPECTED_IRQ_COUNT) {
 		sm->error = true;
-		goto handle_irq;
+		sm->change_state(sm);
+		queue_work(system_highpri_wq, sm->cleanup_work);
+		return IRQ_HANDLED;
 	}
 
 	getnstimeofday64(&ts_current_irq);
@@ -353,19 +328,13 @@ static irqreturn_t dht22_irq_handler(int irq, void *data)
 	processed_irq_count++;
 	ts_prev_gpio_switch = ts_current_irq;
 
-	if (processed_irq_count == EXPECTED_IRQ_COUNT)
+	if (processed_irq_count == EXPECTED_IRQ_COUNT) {
 		sm->finished = true;
-
-handle_irq:
-	queue_work(queue, workers[processed_irq_count % ARRAY_SIZE(workers)]);
+		sm->change_state(sm);
+		queue_work(system_highpri_wq, sm->work);
+	}
 
 	return IRQ_HANDLED;
-}
-
-static void sm_work_func(struct work_struct *work)
-{
-	sm->change_state(sm);
-	sm->handle_state(sm);
 }
 
 static void cleanup_func(struct work_struct *work)
@@ -524,7 +493,7 @@ trigger_store(struct kobject *kobj,
 
 	sscanf(buf, "%d\n", &trigger);
 	if (trigger && can_trigger)
-		queue_work(queue, &trigger_work);
+		queue_work(system_highpri_wq, &trigger_work);
 
 	return count;
 }
