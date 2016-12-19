@@ -67,7 +67,6 @@ static struct attribute *dht22_attrs[] = {
 };
 
 static struct attribute_group attr_group = {
-	.name = "dht22",
 	.attrs = dht22_attrs,
 };
 
