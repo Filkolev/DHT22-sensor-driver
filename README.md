@@ -7,7 +7,7 @@ below:
 [DHT22](https://www.sparkfun.com/datasheets/Sensors/Temperature/DHT22.pdf)
 
 This driver is compiled and tested on Raspberry Pi 3 Model B running Raspbian
-(Linux raspberrypi 4.4.34-v7+ #930). The sensor is connected to the Pi via a
+(Linux raspberrypi 4.4.38-v7+ #938). The sensor is connected to the Pi via a
 breadboard.
 
 This driver uses the Linux kernel GPIO API to trigger the sensor, and processes
