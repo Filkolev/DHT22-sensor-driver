@@ -14,6 +14,24 @@ This driver uses the Linux kernel GPIO API to trigger the sensor, and processes
 the data received by calculating the time intervals between interrupts (a
 transition from HIGH to LOW or from LOW to HIGH state).
 
+## Contents
+
+ 1. [General Overview](#general-overview)
+   1.1. [Triggering The Sensor](#triggering-the-sensor)
+   1.2. [Reading The Data](#reading-the-data)
+   1.3. [Interpreting The Data](#interpreting-the-data)
+ 2. [Using The Driver](#using-the-driver)
+   2.1. [Loading/Unloading The Driver](#loadingunloading-the-driver)
+   2.2. [Sysfs Attributes](#sysfs-attributes)
+ 3. [Implementation Details](#implementation-details)
+   3.1. [GPIO API](#gpio-api)
+   3.2. [IRQ API](#irq-api)
+   3.3. [Sysfs Attributes Creation](#sysfs-attributes-creation)
+   3.4. [High-resolution Timers](#high-resolution-timers)
+   3.5. [FSM](#fsm)
+   3.6. [Interrupt Handling](#interrupt-handling)
+ 4. [Performance Issues](#performance-issues)
+
 ## General Overview
 
 ### Triggering The Sensor
@@ -215,12 +233,12 @@ value signal of 52 us a "1" or a "0"?). Examples of both 0s that are longer than
 A possible approach to solve this is to use a FIQ. From
 [BCM2835 ARM Peripherals](https://www.raspberrypi.org/wp-content/uploads/2012/02/BCM2835-ARM-Peripherals.pdf#page=110):
 
-> 7.3 Fast Interrupt (FIQ).
+> 7.3 Fast Interrupt (FIQ).  
 > One interrupt sources can be selected to be connected to the ARM FIQ input.
 > There is also one FIQ enable. An interrupt which is selected as FIQ should
 > have its normal interrupt enable bit cleared.
 >
-> 7.4    Interrupt priority.
+> 7.4    Interrupt priority.  
 > There is no priority for any interrupt. If one interrupt is much more
 > important then all others it can be routed to the FIQ.
 
@@ -234,3 +252,6 @@ A FIQ seems to be the only way to ensure the driver consistently reads the
 sensor data correctly. However, there are mechanisms which ensure that the
 driver recovers from errors and the performace problems are not too pronounced
 to justify the time and effort required to imeplement a FIQ.
+
+
+[back to top](#dht22-sensor-driver)
