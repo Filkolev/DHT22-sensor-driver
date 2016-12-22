@@ -16,25 +16,27 @@ transition from HIGH to LOW or from LOW to HIGH state).
 
 ## Contents
 
- 1. [General Overview](#general-overview)
-   1.1. [Triggering The Sensor](#triggering-the-sensor)
-   1.2. [Reading The Data](#reading-the-data)
-   1.3. [Interpreting The Data](#interpreting-the-data)
- 2. [Using The Driver](#using-the-driver)
-   2.1. [Loading/Unloading The Driver](#loadingunloading-the-driver)
-   2.2. [Sysfs Attributes](#sysfs-attributes)
- 3. [Implementation Details](#implementation-details)
-   3.1. [GPIO API](#gpio-api)
-   3.2. [IRQ API](#irq-api)
-   3.3. [Sysfs Attributes Creation](#sysfs-attributes-creation)
-   3.4. [High-resolution Timers](#high-resolution-timers)
-   3.5. [FSM](#fsm)
-   3.6. [Interrupt Handling](#interrupt-handling)
- 4. [Performance Issues](#performance-issues)
+ 1. [General Overview](#general-overview)  
+   1.1. [Triggering The Sensor](#triggering-the-sensor)  
+   1.2. [Reading The Data](#reading-the-data)  
+   1.3. [Interpreting The Data](#interpreting-the-data)  
+ 2. [Using The Driver](#using-the-driver)  
+   2.1. [Loading/Unloading The Driver](#loadingunloading-the-driver)  
+   2.2. [Sysfs Attributes](#sysfs-attributes)  
+ 3. [Implementation Details](#implementation-details)  
+   3.1. [GPIO API](#gpio-api)  
+   3.2. [IRQ API](#irq-api)  
+   3.3. [Sysfs Attributes Creation](#sysfs-attributes-creation)  
+   3.4. [High-resolution Timers](#high-resolution-timers)  
+   3.5. [FSM](#fsm)  
+   3.6. [Interrupt Handling](#interrupt-handling)  
+ 4. [Performance Issues](#performance-issues)  
 
-## General Overview
+## General Overview  
+[back to top](#dht22-sensor-driver)
 
-### Triggering The Sensor
+### Triggering The Sensor  
+[back to top](#dht22-sensor-driver)
 
 The DHT22 must be manually triggered with a specific signal as follows:
  1. Line is initially kept HIGH (it is active when it is LOW). We must allow
@@ -50,7 +52,8 @@ and 40 us. This driver waits 40 us.
 The DHT22 sensor is relatively slow and can be read once every two seconds at
 most.
 
-### Reading The Data
+### Reading The Data  
+[back to top](#dht22-sensor-driver)
 
 The DHT22 produces a total of 83 interrupts on the line which are interpreted as
 5 bytes of data - two bytes containing the humidity reading, two bytes
@@ -68,7 +71,8 @@ us. As a convenient simplification, the signal length can be compared to 50 us,
 which is the preparatory signal length; a '0' will surely be shorter than 50 us
 and a '1' will surely be longer.
 
-### Interpreting The Data
+### Interpreting The Data  
+[back to top](#dht22-sensor-driver)
 
 Both the humidity and temperature take 2 bytes of data. Most significant bits
 are received first. The most sigificant temperature bit shows the sign as the
@@ -77,9 +81,11 @@ Converting the two bytes (for both humidity and temperature) to a 16 bit number
 produces the actual result multiplied by 10, e.g. a temperature of 25.2 degress
 Celsius will be represented as the number 252, or in binary: 00000000 11111100.
 
-## Using The Driver
+## Using The Driver  
+[back to top](#dht22-sensor-driver)
 
-### Loading/Unloading The Driver
+### Loading/Unloading The Driver  
+[back to top](#dht22-sensor-driver)
 
 The git repository contains the compiled .ko file which can be dynamically
 loaded in the kernel with the following command (as root):
@@ -103,11 +109,11 @@ The driver can be unloaded by executing (as root): `rmmod dht22_driver`.
 
 The driver can be recompiled using `make`.
 
-### Sysfs Attributes
+### Sysfs Attributes  
+[back to top](#dht22-sensor-driver)
 
 When loaded, the driver creates a directory in _/sys/kernel/_ called 'dht22'.
-It contains one attribute group (sub-folder), also called 'dht22'. The following
-attributes are exported:
+The following attributes are exported:
 * **temperature** (read-only) - shows the most recent temperature reading, in
 Celsius, e.g. '16.5'
 * **humidity** (read-only) - shows the most recent humidity reading in percent,
@@ -127,9 +133,11 @@ Note that writing to files in _/sys/kernel/_ is forbidden for group 'other',
 therefore any writes should be performed with root permissions. This is enforced
 by the kernel, not by the driver.
 
-## Implementation Details
+## Implementation Details  
+[back to top](#dht22-sensor-driver)
 
-### GPIO API
+### GPIO API  
+[back to top](#dht22-sensor-driver)
 
 The driver makes use of the kernel's GPIO API in order to use the sensor.
 First, the provided GPIO is checked for validity with a call to
@@ -148,7 +156,8 @@ _/sys/class/gpio/gpioNum/_.
 On error and module unload time cleanup is performed via `gpio_unexport()` and
 `gpio_free()`.
 
-### IRQ API
+### IRQ API  
+[back to top](#dht22-sensor-driver)
 
 In order to read data from the sensor, the driver processes interrupts from the
 specified GPIO. First, the IRQ number is obtained via `gpio_to_irq()`, then
@@ -162,7 +171,8 @@ state (more on the FSM [below](#fsm)).
 
 Cleanup is performed via `free_irq()`.
 
-### Sysfs Attributes Creation
+### Sysfs Attributes Creation  
+[back to top](#dht22-sensor-driver)
 
 Two functions are used in order to export the necessary sysfs attributes
 described above in the section [Sysfs Attributes](#sysfs-attributes).
@@ -175,7 +185,8 @@ load and/or store handlers for each attribute (file).
 
 Cleanup is performed via `kobject_put()`.
 
-### High-resolution Timers
+### High-resolution Timers  
+[back to top](#dht22-sensor-driver)
 
 Two timers are used by the driver.
 
@@ -190,7 +201,8 @@ The second timer only runs if `autoupdate` is `false` and the previous sensor
 reading failed. It re-triggers the sensor (up to 5 times) in order to obtain
 a valid reading.
 
-### FSM
+### FSM  
+[back to top](#dht22-sensor-driver)
 
 A finite state machine is implemented to keep track of the current state. It can
 be in one of the following states: IDLE, RESPONDING, FINISHED, ERROR.
@@ -208,14 +220,16 @@ given the strict time constraints when working with the DHT22 sensor).
 All FSM-related definitions are separated in **dht22\_sm.h** and
 **dht22\_sm.c**.
 
-### Interrupt Handling
+### Interrupt Handling  
+[back to top](#dht22-sensor-driver)
 
 The interrupt handling routine is only responsible for acknowledging the IRQ,
 calculating the time passed since the previous IRQ (storing the result in a
 static array), raising `finished` or `error` flags in the state machine, and
 queueing the FSM state transition and handling.
 
-## Performance Issues
+## Performance Issues  
+[back to top](#dht22-sensor-driver)
 
 There are noticeable performance issues when the system is under heavier load.
 This is easier to notice when the `autoupdate` option is set to `true` and
