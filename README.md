@@ -196,3 +196,41 @@ The interrupt handling routine is only responsible for acknowledging the IRQ,
 calculating the time passed since the previous IRQ (storing the result in a
 static array), raising `finished` or `error` flags in the state machine, and
 queueing the FSM state transition and handling.
+
+## Performance Issues
+
+There are noticeable performance issues when the system is under heavier load.
+This is easier to notice when the `autoupdate` option is set to `true` and
+the update interval is left at its default (also minimum) value of 2 seconds.
+
+There are two kinds of errors that can be observed - hash mismatches and missed
+interrupts. Both can be traced back to latencies, usually connected with the
+USB (as expected) or hrtimers.
+
+`ftrace` reveals that when multiple interrupts occur the time between IRQs
+coming from the DHT22 becomes irregular and sometimes ambiguous (e.g. is a
+value signal of 52 us a "1" or a "0"?). Examples of both 0s that are longer than
+50 us and 1s shorter than 50 us were found.
+
+A possible approach to solve this is to use a FIQ. From
+[BCM2835 ARM Peripherals](https://www.raspberrypi.org/wp-content/uploads/2012/02/BCM2835-ARM-Peripherals.pdf#page=110):
+
+> 7.3 Fast Interrupt (FIQ).
+> One interrupt sources can be selected to be connected to the ARM FIQ input.
+> There is also one FIQ enable. An interrupt which is selected as FIQ should
+> have its normal interrupt enable bit cleared.
+>
+> 7.4    Interrupt priority.
+> There is no priority for any interrupt. If one interrupt is much more
+> important then all others it can be routed to the FIQ.
+
+However, writing a FIQ handler is somewhat involved. First, the USB FIQ must be
+disabled since only one FIQ can be enabled (per Broadcom's document). Second,
+a FIQ handler must only use the range of registers R8-R14; this condition is
+impossible to enforce when compiling with gcc, therefore the handler itself
+must be written in assembly.
+
+A FIQ seems to be the only way to ensure the driver consistently reads the
+sensor data correctly. However, there are mechanisms which ensure that the
+driver recovers from errors and the performace problems are not too pronounced
+to justify the time and effort required to imeplement a FIQ.
