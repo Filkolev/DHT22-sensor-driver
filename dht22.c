@@ -96,7 +96,7 @@ static int __init dht22_init(void)
 	if (!dht22_kobj) {
 		pr_err("Failed to create kobject mapping.\n");
 		ret = -EINVAL;
-		goto irq_err;
+		goto kobject_err;
 	}
 
 	ret = sysfs_create_group(dht22_kobj, &attr_group);
@@ -117,6 +117,8 @@ static int __init dht22_init(void)
 
 sysfs_err:
 	kobject_put(dht22_kobj);
+kobject_err:
+	free_irq(gpio, NULL);
 irq_err:
 	gpio_unexport(gpio);
 	gpio_free(gpio);
